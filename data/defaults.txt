@@ -1,0 +1,20 @@
+; Default instrument, to find instrument file:
+#INSTRUMENT Borea
+;
+; Default MP color, in Sloan R-I, for control.txt stub:
+#MP_RI_COLOR  +0.220
+;
+; Default comp selection criteria, for control.txt stub:
+#MIN_CATALOG_R_MAG  10
+#MAX_CATALOG_R_MAG  16
+#MAX_CATALOG_DR_MMAG 20
+#MIN_CATALOG_RI_COLOR 0.0
+#MAX_CATALOG_RI_COLOR 0.4
+;
+; Default regression options, for control.txt stub:
+;Choices for #FIT_TRANSFORM: Fit=1; Fit=2; Use 0.2 0.4 [=tr1 & tr2 values]; Yes->Fit=1; No->Use 0 0
+#FIT_TRANSFORM  Use +0.36 -0.54        ; to fit quadratic, choose Fit=2
+#FIT_EXTINCTION No           ; choose Yes or No  (case-insensitive)
+#FIT_VIGNETTE Yes            ; choose Yes or No  (case-insensitive)
+#FIT_XY No                   ; choose Yes or No  (case-insensitive)
+#FIT_JD Yes                  ; choose Yes or No  (case-insensitive)

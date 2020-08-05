@@ -1,0 +1,7 @@
+; for instrument 'Borea' (C14 + STXL-6303, 2019-)
+;
+#PIXEL_SHIFT_TOLERANCE  200  ; max variation in pointing & tracking
+#FWHM_NOMINAL  5             ;  used for early calculations, only until images have been analyzed
+#CCD_GAIN  1.57              ;  electrons per ADU
+#ADU_SATURATION  54000       ;
+#TRANSFORM Use +0.36 -0.54   ;
