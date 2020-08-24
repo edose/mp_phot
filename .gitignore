@@ -122,3 +122,10 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# EVD: PyCharm IDE and pylcg stuff:
+.idea/
+.gitignore
+
+
+test/$sessions_for_test/

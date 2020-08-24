@@ -4,27 +4,35 @@ __author__ = "Eric Dose :: New Mexico Mira Project, Albuquerque"
 import os
 from datetime import datetime, timezone
 from collections import Counter
+from math import sqrt, cos, sin, pi
 
 # External packages:
 import numpy as np
 import pandas as pd
 import astropy.io.fits as apyfits
+from astropy.nddata import CCDData
+from astropy.wcs import WCS
 
 
 # From this package:
 from .util import dict_from_directives_file, get_mp_filenames
 
 # TODO: move most of these path and other constants to defaults.txt (or possibly to instrument file):
-DEFAULTS_FILE_FULLPATH = 'C:/Dev/mp_phot/data/defaults.txt'  # TODO: make this relative to package path.
-INSTRUMENT_FILE_DIRECTORY = 'C:/Dev/mp_phot/data/instrument'      # TODO: make this relative to package path.
+DEFAULTS_FILE_FULLPATH = 'C:/Dev/mp_phot/data/defaults.txt'   # TODO: make this relative to package path.
+INSTRUMENT_FILE_DIRECTORY = 'C:/Dev/mp_phot/data/instrument'  # TODO: make this relative to package path.
 MP_TOP_DIRECTORY = 'C:/Astro/MP Photometry/'
-LOG_FILENAME = 'mp_photometry.log'
+LOG_FILENAME = 'mp_phot.log'
 CONTROL_FILENAME = 'control.txt'
 DF_OBS_ALL_FILENAME = 'df_obs_all.csv'
 DF_IMAGES_ALL_FILENAME = 'df_images_all.csv'
 DF_COMPS_ALL_FILENAME = 'df_comps_all.csv'
 
+RADIANS_PER_DEGREE = pi / 180.0
+PIXEL_FACTOR_HISTORY_TEXT = 'Pixel scale factor applied by apply_pixel_scale_factor().'
 
+# PLATESOLUTION_KEYS_TO_REMOVE = ['CTYPE1', 'CTYPE2', 'CRPIX1', 'CRPIX2', 'CRVAL1', 'CRVAL2',
+#                                 'ZMAG', 'EPOCH', 'PA', 'CDELT1', 'CDELT2', 'CROTA1', 'CROTA2',
+#                                 'CD1_1', 'CD1_2', 'CD2_1', 'CD2_2', 'TR1_*', 'TR2_*', 'PLTSOLVD']
 REQUIRED_DEFAULT_DIRECTIVES = ['INSTRUMENT', 'MP_RI_COLOR', 'MIN_CATALOG_R_MAG', 'MAX_CATALOG_R_MAG',
                                'MAX_CATALOG_DR_MMAG', 'MIN_CATALOG_RI_COLOR', 'MAX_CATALOG_RI_COLOR',
                                'FIT_TRANSFORM', 'FIT_EXTINCTION', 'FIT_VIGNETTE',
@@ -35,35 +43,69 @@ REQUIRED_CONTROL_DIRECTIVES = ['REF_STAR_LOCATION', 'MP_LOCATION', 'MP_RI_COLOR'
                                'MIN_CATALOG_R_MAG', 'MAX_CATALOG_R_MAG',
                                'MAX_CATALOG_DR_MMAG', 'MIN_CATALOG_RI_COLOR', 'MAX_CATALOG_RI_COLOR',
                                'FIT_TRANSFORM', 'FIT_EXTINCTION', 'FIT_VIGNETTE', 'FIT_XY', 'FIT_JD']
-FOCUS_LENGTH_MAX_PCT_DEVIATION = 3.0
+FOCUS_LENGTH_MAX_PCT_DEVIATION = 5.0
 
 
-def start(mp_top_directory=MP_TOP_DIRECTORY, mp_id=None, an=None):
+# def remove_platesolution(mp_directory_path=None):
+#     """ From FITS file, remove all header entries (except HISTORY lines) that support plate solution
+#         previously written into the file. This is in preparation for re-solving the file with different
+#         software: whole-image WCS plate solutions for now...one hopes for SIP-enabled plate solutions
+#         in the future.
+#         In any case, this unsolve-resolve work is made necessary by one bit of software that won't
+#         play nicely with *any* other software.
+#     :param mp_directory_path: path of the directory holding the MP FITS files to process.
+#     :return: [None]. FITS files are updated in place.
+#     """
+#     mp_filenames = get_mp_filenames(mp_directory_path)
+#     for fn in mp_filenames:
+#         fullpath = os.path.join(mp_directory_path, fn)  # open to read only.
+#         with apyfits.open(fullpath, mode='update') as hdulist:
+#             hdu = hdulist[0]
+#             header_keys = list(hdu.header.keys())
+#             for key in PLATESOLUTION_KEYS_TO_REMOVE:
+#                 if key.endswith('*'):
+#                     for hk in header_keys:
+#                         if hk.startswith(key[:-1]):
+#                             try:
+#                                 _ = int(hk[len(key[:-1]):])  # a test only.
+#                             except ValueError:
+#                                 pass  # if key doesn't end in an integer, do nothing.
+#                             else:
+#                                 del hdu.header[hk]  # if key does end in integer.
+#                 if key in header_keys:
+#                     del hdu.header[key]
+#             hdu.header['HISTORY'] = 'Plate solution removed by remove_platesolution().'
+#             hdulist.flush()  # finish writing to same file in same location.
+#     print('OK: remove_platesolution() has processed', len(mp_filenames), 'MP FITS files.')
+
+
+def start(mp_top_directory=MP_TOP_DIRECTORY, mp_id=None, an=None, filter=None):
     # Adapted from package mpc, mp_phot.start().
     """ Launch one session of MP photometry workflow.
     :param mp_top_directory: path of lowest directory common to all MP photometry FITS, e.g.,
-               'C:/Astro/MP Photometry' [string]
+               'C:/Astro/MP Photometry'. [string]
     :param mp_id: either a MP number, e.g., 1602 for Indiana [integer or string], or for an id string
-               for unnumbered MPs only, e.g., '' [string only].
-    :param an: Astronight string representation, e.g., '20191106' [integer or string].
+               for unnumbered MPs only, e.g., ''. [string only]
+    :param an: Astronight string representation, e.g., '20191106'. [integer or string]
+    :param filter: name of filter for this session, or None to use default from instrument file. [string]
     :return: [None]
     """
     if mp_id is None or an is None:
         print(' >>>>> Usage: start(top_directory, mp_id, an)')
         return
-
     mp_id, an_string = process_mp_and_an(mp_id, an)
 
     # Construct directory path and make it the working directory:
-    mp_directory = os.path.join(mp_top_directory, 'MP_' + mp_id[1], 'AN' + an_string)
+    mp_directory = os.path.join(mp_top_directory, 'MP_' + mp_id[1:], 'AN' + an_string)
     os.chdir(mp_directory)
     print('Working directory set to:', mp_directory)
 
     # Initiate log file and finish:
     log_file = open(LOG_FILENAME, mode='w')  # new file; wipe old one out if it exists.
     log_file.write(mp_directory + '\n')
-    log_file.write('MP: ' + mp_id[1] + '\n')
+    log_file.write('MP: ' + mp_id + '\n')
     log_file.write('AN: ' + an_string + '\n')
+    log_file.write('FILTER:' + filter + '\n')
     log_file.write('This log started: ' +
                    '{:%Y-%m-%d  %H:%M:%S utc}'.format(datetime.now(timezone.utc)) + '\n')
     log_file.close()
@@ -71,7 +113,7 @@ def start(mp_top_directory=MP_TOP_DIRECTORY, mp_id=None, an=None):
     print('Next: assess()')
 
 
-def resume(mp_top_directory=MP_TOP_DIRECTORY, mp_id=None, an=None):
+def resume(mp_top_directory=MP_TOP_DIRECTORY, mp_id=None, an=None, filter_string=None):
     # Adapted from package mpc, mp_phot.assess().
     """ Restart a workflow in its correct working directory,
         but keep the previous log file--DO NOT overwrite it.
@@ -81,11 +123,10 @@ def resume(mp_top_directory=MP_TOP_DIRECTORY, mp_id=None, an=None):
     if mp_id is None or an is None:
         print(' >>>>> Usage: resume(top_directory, mp_id, an)')
         return
-
     mp_id, an_string = process_mp_and_an(mp_id, an)
 
     # Construct directory path and make it the working directory:
-    this_directory = os.path.join(mp_top_directory, 'MP_' + mp_id[1], 'AN' + an_string)
+    this_directory = os.path.join(mp_top_directory, 'MP_' + mp_id[1:], 'AN' + an_string)
     os.chdir(this_directory)
 
     # Verify that proper log file already exists in the working directory:
@@ -93,8 +134,10 @@ def resume(mp_top_directory=MP_TOP_DIRECTORY, mp_id=None, an=None):
     if get_context() is None:
         print(' >>>>> Can\'t resume in', this_directory, '(has start() been run?)')
         return
-    log_this_directory, log_mp_string, log_an_string = this_context
-    if log_mp_string.lower() == mp_id[1].lower() and log_an_string.lower() == an_string.lower():
+    log_this_directory, log_mp_string, log_an_string, log_filter_string = this_context
+    if log_mp_string.lower() == mp_id[1].lower() and \
+            log_an_string.lower() == an_string.lower() and \
+            log_filter_string == filter_string:
         print('READY TO GO in', this_directory)
     else:
         print(' >>>>> Can\'t resume in', this_directory)
@@ -112,7 +155,7 @@ def assess():
     context = get_context()
     if context is None:
         return
-    this_directory, mp_string, an_string = context
+    this_directory, mp_string, an_string, filter_string = context
     log_file = open(LOG_FILENAME, mode='a')  # set up append to log file.
     log_file.write('\n===== access()  ' +
                    '{:%Y-%m-%d  %H:%M:%S utc}'.format(datetime.now(timezone.utc)) + '\n')
@@ -153,6 +196,8 @@ def assess():
         fullpath = os.path.join(this_directory, filename)
         hdu = apyfits.open(fullpath)[0]  # already known to be valid, from above.
         df.loc[filename, 'PlateSolved'] = fits_is_plate_solved(hdu)
+        # TODO: if is plate solved, add FITS header line 'plate solution verified' etc.
+        # TODO: if is plate solved, calc and add any customary/PinPoint plate-sol lines back in.
         df.loc[filename, 'Calibrated'] = fits_is_calibrated(hdu)
         df.loc[filename, 'FWHM'] = fits_header_value(hdu, 'FWHM')
         df.loc[filename, 'FocalLength'] = fits_focal_length(hdu)
@@ -231,7 +276,7 @@ def assess():
         log_file.write('assess(): ' + str(n_warnings) + ' warnings.' + '\n')
     log_file.close()
 
-    write_control_txt_stub(this_directory, log_file, df)  # if it doesn't already exist.
+    write_control_txt_stub(this_directory, df)  # if it doesn't already exist.
 
 
 def measure():
@@ -264,8 +309,11 @@ class Settings:
             defaults_dict['INSTRUMENT'] = instrument_name
 
         # Read and parse instrument file (given in __init__() or in defaults.txt):
-        instrument_filename = defaults_dict['INSTRUMENT'].split('.txt')[0] + '.txt'  # exactly 1 .txt @ end.
-        fullpath = os.path.join(INSTRUMENT_FILE_DIRECTORY, instrument_filename)
+        if instrument_name is None:
+            self.instrument_filename = defaults_dict['INSTRUMENT'].split('.txt')[0] + '.txt'  # 1 .txt.
+        else:
+            self.instrument_filename = instrument_name.split('.txt')[0] + '.txt'  # 1 .txt @ end.
+        fullpath = os.path.join(INSTRUMENT_FILE_DIRECTORY, self.instrument_filename)
         instrument_dict = dict_from_directives_file(fullpath)
         instrument_dict_directives = set(instrument_dict.keys())
         required_directives = set(REQUIRED_INSTRUMENT_DIRECTIVES)
@@ -285,22 +333,36 @@ class Settings:
         # Cast to floats those values that actually represent floats:
         for key in ['MP_RI_COLOR', 'MIN_CATALOG_R_MAG', 'MAX_CATALOG_R_MAG',
                     'MAX_CATALOG_DR_MMAG', 'MIN_CATALOG_RI_COLOR', 'MAX_CATALOG_RI_COLOR',
-                    'PIXEL_SHIFT_TOLERANCE', 'FWHM_NOMINAL', 'CCD_GAIN', 'ADU_SATURATION']:
+                    'PIXEL_SHIFT_TOLERANCE', 'FWHM_NOMINAL', 'CCD_GAIN', 'ADU_SATURATION',
+                    'PINPOINT_PIXEL_SCALE_FACTOR']:
             self._data[key] = float(self._data[key])
+
+        # Split long transform strings into value lists:
+        self._data['FIT_TRANSFORM'] = self._data['FIT_TRANSFORM'].split()
+        if not isinstance(self._data['TRANSFORM'], list):
+            self._data['TRANSFORM'] = [self._data['TRANSFORM']]
+        self._data['TRANSFORM'] = [tr.split() for tr in self._data['TRANSFORM']]
+
+    def __str__(self):
+        return 'Settings object from instrument file ' + self.instrument_filename
 
     # Allow direct access as settings=Settings(); value = settings['somekey'].
     def __getitem__(self, key):
         return self._data.get(key, None)  # return None if key absent.
 
+    def get(self, key, default_value):
+        return self._data.get(key, default_value)
 
-class ControlData:
+
+class Control:
     """ Holds data from control.txt file. Assumes current working directory is set by start(). """
     def __init__(self):
         context = get_context()
         if context is None:
             return
-        this_directory, mp_string, an_string = context
-        control_dict = dict_from_directives_file(os.path.join(this_directory, CONTROL_FILENAME))
+        this_directory, mp_string, an_string, filter_string = context
+        self.fullpath = os.path.join(this_directory, CONTROL_FILENAME)
+        control_dict = dict_from_directives_file(self.fullpath)
         control_directives = set(control_dict.keys())
         required_directives = set(REQUIRED_CONTROL_DIRECTIVES)
         missing_directives = required_directives - control_directives
@@ -370,10 +432,12 @@ class ControlData:
                 new_value = [tokens[0], None, None]
             new_values.append(new_value)
         control_dict['MP_LOCATION'] = new_values
-
         self._data = control_dict
 
-    # Allow direct access as control=ControlData(); value = control['somekey'].
+    def __str__(self):
+        return 'Control object from ' + self.fullpath
+
+    # Allow direct access as control=Control(); value = control['somekey'].
     def __getitem__(self, key):
         return self._data.get(key, None)  # return None if key absent.
 
@@ -382,22 +446,28 @@ SUPPORT_FUNCTIONS________________________________________________ = 0
 
 
 def process_mp_and_an(mp_id, an):
-    """ Return MP id and Astronight id in usable forms. """
+    """ Return MP id and Astronight id in usable (internal) forms.
+    :param mp_id: raw MP identification, either number or unnumbered ID. [int or string]
+    :param an: Astronight ID yyyymmdd. [int or string]
+    :return: 2-tuple (mp_id, an_string) [tuple of 2 strings]:
+             mp_id has '#' prepended for numbered MP, '*' prepended for ID of unnumbered MP.
+             an_string is always an 8 character string 'yyyymmdd' representing Astronight.
+    """
     # Handle mp_id:
     if isinstance(mp_id, int):
-        mp_id = ('numbered', str(mp_id))
+        mp_id = ('#' + str(mp_id))  # mp_id like '#1108' for numbered MP 1108 (if passed in as int).
     else:
         if isinstance(mp_id, str):
             try:
-                _ = int(mp_id)  # test only
+                _ = int(mp_id)  # a test only
             except ValueError:
-                mp_id = ('unnumbered', mp_id)
+                mp_id = '*' + mp_id   # mp_id like '*1997 TX3' for unnumbered MP ID.
             else:
-                mp_id = ('numbered', mp_id)
+                mp_id = '#' + mp_id  # mp_id like '#1108' for numbered MP 1108 (if passed in as string).
         else:
             print(' >>>>> ERROR: mp_id must be an int or string')
             return None
-    print('MP ID =', mp_id[1], '(' + mp_id[0] + ').')
+    print('MP ID =', mp_id + '.')
 
     # Handle an:
     an_string = str(an).strip()
@@ -412,7 +482,7 @@ def process_mp_and_an(mp_id, an):
 
 def get_context():
     """ This is run at beginning of workflow functions (except start() or resume()) to orient the function.
-    :return: 3-tuple: (this_directory, mp_string, an_string) [3 strings]
+    :return: 4-tuple: (this_directory, mp_string, an_string, filter_string) [4 strings]
     """
     this_directory = os.getcwd()
     if not os.path.isfile(LOG_FILENAME):
@@ -429,7 +499,8 @@ def get_context():
         return None
     mp_string = lines[1][3:].strip().upper()
     an_string = lines[2][3:].strip()
-    return this_directory, mp_string, an_string
+    filter_string = lines[3][7:].strip()
+    return this_directory, mp_string, an_string, filter_string
 
 
 def fits_header_value(hdu, key):
@@ -450,6 +521,7 @@ def fits_header_value(hdu, key):
 
 def fits_is_plate_solved(hdu):
     # Adapted loosely from package photrix, class FITS. Returns boolean.
+    # TODO: tighten these tests, prob. by checking for reasonable numerical values.
     plate_solution_keys = ['CD1_1', 'CD1_2', 'CD2_1', 'CD2_2', 'CRVAL1', 'CRVAL2', 'CRPIX1', 'CRPIX2']
     values = [fits_header_value(hdu, key) for key in plate_solution_keys]
     for v in values:
@@ -496,7 +568,7 @@ def fits_focal_length(hdu):
     return (fl_x + fl_y) / 2.0
 
 
-def write_control_txt_stub(this_directory, log_file, df):
+def write_control_txt_stub(this_directory, df):
     # Prepare data required to write control.txt stub:
     defaults = Settings()
     jd_min = df['JD_mid'].min()
@@ -509,12 +581,13 @@ def write_control_txt_stub(this_directory, log_file, df):
     def yes_no(true_false):
         return 'Yes' if true_false else 'No'
 
-    # Write control.txt (stub):
+    # Write file stub:
     lines = [';----- This is ' + CONTROL_FILENAME + ' for directory:\n;      ' + this_directory,
              ';',
              ';===== REF STAR LOCATIONS BLOCK ==========================================',
              ';===== Enter at least 2 in the SAME image, before measure_mp() ===========',
              ';      Reference Star x,y positions for image alignment:',
+             '#REF_STAR_LOCATION  ' + earliest_filename + '  [mp_x_pixel]  [mp_y_pixel]   ; ',
              '#REF_STAR_LOCATION  ' + earliest_filename + '  [mp_x_pixel]  [mp_y_pixel]   ; ',
              '#REF_STAR_LOCATION  ' + earliest_filename + '  [mp_x_pixel]  [mp_y_pixel]   ; ',
              ';',
@@ -573,3 +646,32 @@ def write_control_txt_stub(this_directory, log_file, df):
         with open(fullpath, 'w') as f:
             f.writelines(lines)
     print('New ' + CONTROL_FILENAME + ' file written.\n')
+
+
+# def apply_pixel_scale_factor(fullpath):
+#     hdu0 = apyfits.open(fullpath)[0]
+#     h = hdu0.header
+#     print(str(h['CDELT1']), str(h['CDELT2']))
+#     cdelt1 = np.sign(h['CDELT1']) * (
+#             (abs(h['CDELT1']) + abs(h['CDELT2'])) / 2.0) * PINPOINT_PLATE_FACTOR
+#     cdelt2 = np.sign(h['CDELT2']) * (
+#             (abs(h['CDELT1']) + abs(h['CDELT2'])) / 2.0) * PINPOINT_PLATE_FACTOR
+#     cd11 = + cdelt1 * cos(h['CROTA2'] * RADIANS_PER_DEGREE)
+#     cd12 = - cdelt2 * sin(h['CROTA2'] * RADIANS_PER_DEGREE)
+#     cd21 = + cdelt1 * sin(h['CROTA2'] * RADIANS_PER_DEGREE)
+#     cd22 = + cdelt2 * cos(h['CROTA2'] * RADIANS_PER_DEGREE)
+#     h['CDELT1'] = cdelt1
+#     h['CDELT2'] = cdelt2
+#     h['CD1_1'] = cd11
+#     h['CD1_2'] = cd12
+#     h['CD2_1'] = cd21
+#     h['CD2_2'] = cd22
+#     print(str(h['CDELT1']), str(h['CDELT2']))
+#     radesysa = h.get('RADECSYS')  # replace obsolete key if present.
+#     if radesysa is not None:
+#         h['RADESYSa'] = radesysa
+#         del h['RADECSYS']
+#     h['HISTORY'] = PIXEL_FACTOR_HISTORY_TEXT
+#     this_wcs = WCS(header=h)
+#     ccddata_object = CCDData(data=hdu0.data, wcs=this_wcs, header=h, unit='adu')
+#     return ccddata_object

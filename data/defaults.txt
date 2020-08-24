@@ -13,7 +13,7 @@
 ;
 ; Default regression options, for control.txt stub:
 ;Choices for #FIT_TRANSFORM: Fit=1; Fit=2; Use 0.2 0.4 [=tr1 & tr2 values]; Yes->Fit=1; No->Use 0 0
-#FIT_TRANSFORM  Use +0.36 -0.54        ; to fit quadratic, choose Fit=2
+#FIT_TRANSFORM  Clear SR SR-SI Use +0.36 -0.54
 #FIT_EXTINCTION No           ; choose Yes or No  (case-insensitive)
 #FIT_VIGNETTE Yes            ; choose Yes or No  (case-insensitive)
 #FIT_XY No                   ; choose Yes or No  (case-insensitive)

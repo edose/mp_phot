@@ -4,7 +4,7 @@
 #FWHM_NOMINAL  5             ;  used for early calculations only
 #CCD_GAIN  1.57              ;  electrons per ADU
 #ADU_SATURATION  54000       ;
-#DEFAULT_FILTER Clear        ;
 #PINPOINT_PIXEL_SCALE_FACTOR  0.997  ;  deg/pixel image / deg/pixel pinpoint solution
+#DEFAULT_FILTER Clear        ;
 #TRANSFORM Clear SR SR-SI Use +0.36 -0.54  ;  default
 #TRANSFORM BB    SR SR-SI Fit=2            ;  default
