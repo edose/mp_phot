@@ -11,9 +11,15 @@ import matplotlib.pyplot as plt
 import astropy.io.fits as apyfits
 from astropy.nddata import CCDData
 from astropy.wcs import WCS
+from astropy.stats import sigma_clipped_stats
+from astropy.modeling.models import Gaussian2D
+from astropy.convolution import convolve
 from astropy.visualization import LogStretch
 from astropy.visualization.mpl_normalize import ImageNormalize
 from ccdproc import trim_image, wcs_project
+from photutils import SplitCosineBellWindow, CosineBellWindow, \
+    data_properties, centroid_com, create_matching_kernel
+import skimage.transform as skt
 
 # From this package:
 from mp_phot import util
@@ -21,6 +27,7 @@ from mp_phot import util
 PINPOINT_PLTSOLVD_TEXT = 'Plate has been solved by PinPoint'
 PIXEL_FACTOR_HISTORY_TEXT = 'Pixel scale factor applied by apply_pixel_scale_factor().'
 RADIANS_PER_DEGREE = pi / 180.0
+MAX_MISALIGNMENT_FOR_CONVERGENCE = 1000.0  # in millipixels
 
 def measure_mp():
     pass
@@ -257,17 +264,49 @@ class MP_ImageList:
             May include rotation. Tighter than make_subimages() above which uses whole-pixel slicing,
                 but not so tight as ref_star_align_all() below which uses convolution. """
         wcs_reference = self.subimages[0].wcs.copy()
-        aligned_subimages = [wcs_project(si, wcs_reference, order='biqudratic') for si in self.subimages]
+        aligned_subimages = [wcs_project(si, wcs_reference, order='biquadratic') for si in self.subimages]
+        # aligned_subimages = [wcs_project(si, wcs_reference) for si in self.subimages]
         self.subimages = aligned_subimages
 
     def trim_nans_from_subimages(self):
         """ Find coordinates of (largest) bounding box within which all images have all good pixels,
             meaning no NaN pixels at the data edges, no True (masked) pixels in the mask edges.
             Works from the outside edges and inward, so will probably miss *internal* NaN
-                or masked pixels. """
-        # SKIP FOR NOW. Remember that all images must stay aligned and of same size and of correct WCS,
-        #    so they will have to be tested together and trimmed using ccdproc.trim_image().
-        pass
+                or masked pixels.
+            Adapted 2020-08-24 from mpc.mp_bulldozer.recrop_mp_images().
+            """
+        # All images must stay aligned and of same size and of correct WCS,
+        #    so they must be tested and trimmed *together* using ccdproc.trim_image().
+        arrays = [si.data for si in self.subimages]
+        if not all([a.shape == arrays[0].shape for a in arrays]):
+            print(' >>>>> ERROR .trim_nans_from_subimages(): the ' + str(len(arrays)) +
+                  ' arrays differ in shape, but must be uniform shape.')
+            return None
+        pixel_sum = np.sum(a for a in arrays)  # for each pixel: if any array is NaN, then sum will be NaN.
+        # is_any_nan = np.full_like(arrays[0], False, np.bool)  # accumulator.
+        # for array in arrays:
+        #     is_any_nan = np.logical_or(is_any_nan, np.isnan(array))
+
+        # Find largest rectangle having no NaN in any of the arrays, inward spiral search:
+        x_min, y_min = 0, 0
+        y_max, x_max = arrays[0].shape
+        while min(x_max - x_min, y_max - y_min) > 20 * self.settings['FWHM_NOMINAL']:
+            before_limits = (x_min, x_max, y_min, y_max)
+            if np.any(np.isnan(pixel_sum[y_min:y_min + 1, x_min:x_max])):  # if top row has NaN.
+                y_min += 1
+            if np.any(np.isnan(pixel_sum[y_max - 1:y_max, x_min:x_max])):  # if bottom row has NaN.
+                y_max -= 1
+            if np.any(np.isnan(pixel_sum[y_min:y_max, x_min:x_min + 1])):  # if leftmost column has NaN.
+                x_min += 1
+            if np.any(np.isnan(pixel_sum[y_min:y_max, x_max - 1:x_max])):  # if rightmost col has NaN.
+                x_max -= 1
+            after_limits = (x_min, x_max, y_min, y_max)
+            if after_limits == before_limits:  # if no trims made in this iteration.
+                break
+        if np.any(np.isnan(pixel_sum[y_min:y_max, x_min:x_max])):
+            print(' >>>>> ERROR: recrop_mid_images() did not succeed in removing all NaNs.')
+        nan_trimmed_subimages = [trim_image(si[y_min:y_max, x_min:x_max]) for si in self.subimages]
+        self.subimages = nan_trimmed_subimages
 
     def get_subimage_locations(self):
         """ Get exact ref_star x,y positions from radecs by WCS, then recentroiding.
@@ -339,11 +378,18 @@ class Subarray:
         """
         self.filename = filename
         self.array = array.copy()
-        self.mask = mask.copy()
+        if mask is None:
+            self.mask = np.full_like(self.array, False, np.bool)
+        else:
+            self.mask = mask.copy()
         self.jd_mid = jd_mid
         self.exposure = exposure
         self.ref_star_locations = ref_star_locations.copy()
         self.mp_location = mp_location
+        self.ref_star_squares = []   # placeholder, will be a list of util.Square objects.
+        self.matching_kernel = None  # placeholder, will be a np.ndarray
+        self.convolved_array = None  # placeholder, will be a np.ndarray
+        self.realigned_array = None  # placeholder, will be a np.ndarray
 
     def __str__(self):
         return 'Subarray object from ' + self.filename + ' of shape ' + str(self.array.shape)
@@ -371,6 +417,156 @@ class SubarrayList:
     # Allow direct access as subarray = subarraylist['some_filename'].
     def __getitem__(self, filename):
         return self._dict_of_subarrays.get(filename, None)  # return None if key (filename) is absent.
+
+    def make_matching_kernels(self):
+        """ Find the smallest appropriate target 2-D Gaussian PSF, then for each subarray,
+            make a matching kernel that will transform the ref stars into that 2-D Gaussian.
+            Adapted closely 2020-08-24 from mpc.mp_bulldozer.make_ref_star_psfs(),
+            .calc_target_kernel_sigma(), and .calc_target_kernels().
+        :return: None. Subarraylist.subarray objects are populated with matching kernels.
+                 [list of lists of numpy.ndarrays]
+        """
+        # Make ref star PSF arrays (very small kernel-sized images) [save as util.Square objects]:
+        radius = 5 * self.settings['FWHM_NOMINAL']
+        for sa in self.subarrays:
+            subarray_psfs = []  # for this subarray (all ref stars).
+            for x_center, y_center in sa.ref_star_locations:
+                square = util.Square(sa.array, x_center, y_center, radius)
+                bkgd_adus, _ = util.calc_background_adus(square.data)
+                bkdg_subtracted_array = square.data - bkgd_adus
+                # Vignette bkgd-subtracted array (reduce noise far from center, in lieu of sharp mask).
+                window_array = (SplitCosineBellWindow(alpha=0.5, beta=0.25))(square.shape)
+                raw_kernel = window_array * bkdg_subtracted_array
+                square.data = [raw / np.sum(raw) for raw in raw_kernel]  # normalized kernel.
+                sa.ref_star_squares.append(square)
+                subarray_psfs.append(square)
+            sa.ref_star_squares.append()
+
+        # Calculate smallest appropriate sigma for target 2_D Gaussian PSF (everything scales from this):
+        sigma_list = []
+        all_psfs = [sa.ref_star_squares for sa in self.subarrays]
+        for arr in np.flatten(all_psfs):
+            dps = data_properties(arr.data)
+            sigma_list.append(dps.semimajor_axis_sigma.value)
+            print('   ',  '{:.2f}'.format(dps.xcentroid.value),
+                          '{:.2f}'.format(dps.ycentroid.value),
+                          '{:.3f}'.format(dps.semimajor_axis_sigma.value))
+        max_sigma = max(sigma_list)
+        target_sigma = 1.0 * max_sigma
+
+        # Make matching kernels:
+        for i_sa, sa in enumerate(self.subarrays):
+            sa_matching_kernels = []
+            for i_rs, rs in enumerate(sa.ref_star_locations):
+                edge_length = sa.shape[0]
+                y, x = np.mgrid[0:edge_length, 0:edge_length]
+                this_psf = all_psfs[i_sa][i_rs]
+                x_center_parent, y_center_parent = this_psf.recentroid()  # relative to parent.
+                x_center0 = x_center_parent - this_psf.x_low
+                y_center0 = y_center_parent - this_psf.y_low
+                # Make target PSFs (2-D Gaussian):
+                gaussian = Gaussian2D(1, x_center0, y_center0, target_sigma, target_sigma)  # function
+                target_psf = gaussian(x, y)  # ndarray
+                target_psf /= np.sum(target_psf)  # ensure normalized to sum 1.
+                matching_kernel = create_matching_kernel(this_psf, target_psf, CosineBellWindow(alpha=0.35))
+                sa_matching_kernels.append(matching_kernel)
+            sum_matching_kernels = np.sum(mk for mk in sa_matching_kernels)
+            sa.matching_kernel = sa_matching_kernels / np.sum(sum_matching_kernels)  # normlized to sum 1.
+
+    def convolve_subarrays(self):
+        """ Convolve subarrays with matching kernels to render new subarrays with very nearly Gaussian
+            ref star PSFs with very nearly uniform sigma.
+        :return: None. Subarraylist.subarray objects are populated with convolved arrays.
+                 [list of lists of numpy.ndarrays]
+        """
+        new_subarrays = []
+        for i_sa, sa in enumerate(self.subarrays):
+            convolved_array = convolve(sa.array.copy(), sa.matching_kernel, boundary='extend')
+            sa.convolved_array = Subarray(sa.filename, convolved_array, None, sa.jd_mid,
+                                          sa.exposure, sa.ref_star_locations, sa.mp_locations)
+
+    def realign(self, max_iterations=3):
+        """ Iteratively improve array alignments to millipixel precision.
+            Each loop: (1) get best similarity transform (rotation+translation+scale)
+            from ref star positions vs desired positions, (2) perform transform.
+        :param max_iterations: [int]
+        :return: None.
+        """
+        # Set target ref star pixel x,y locations as the mean recentroided location, across subarrays:
+        radius = 5 * self.settings['FWHM_NOMINAL']
+        target_locations = []
+        for i_rs in range(len(self.subarrays[0].ref_star_locations)):
+            x_list, y_list = [], []
+            for sa in self.subarrays:
+                square = util.Square(sa.realigned_array,
+                                     sa.ref_star_locations[i_rs][0],
+                                     sa.ref_star_locations[i_rs][1], radius)
+                x, y = square.recentroid()
+                x_list.append(x)
+                y_list.append(y)
+            target_locations.append(tuple([np.mean(x_list), np.mean(y_list)]))
+        target_locations = np.array(target_locations)
+
+        # Initialize the best/current subarrays
+        current_arrays = [sa.realigned_array for sa in self.subarrays]
+
+        for i_loop in range(max_iterations):
+            # Estimate misalignment (in millipixels RMS):
+            total_squared_misalignment = 0.0
+            n_centers = 0
+            current_locations = []  # will be list[subarray][ref_star](x,y tuple).
+            for sa in self.subarrays:
+                current_location = []
+                for i_rs in range(len(sa.ref_star_locations)):
+                    square = util.Square(sa.realigned_array,
+                                         sa.ref_star_locations[i_rs][0],
+                                         sa.ref_star_locations[i_rs][1], radius)
+                    x, y = square.recentroid()
+                    current_location.append((x, y))
+                    x_target, y_target = target_locations[i_rs]
+                    total_squared_misalignment += 1000.0 * ((x - x_target)**2 + (y - y_target)**2)
+                    n_centers += 1
+                current_locations.append(current_location)
+            rms_misalignment = sqrt(total_squared_misalignment / n_centers)
+
+            # TODO: Print i_loop, old xy, target xy, rms misalignment.
+
+            # Exit loop if converged:
+            if rms_misalignment <= MAX_MISALIGNMENT_FOR_CONVERGENCE:
+                break
+
+            # Get best similarity transform for each subarray (scikit-image.transform.SimilarityTransform):
+            transforms = []
+            for i_sa, sa in enumerate(self.subarrays):
+                transform = skt.SimilarityTransform()  # populate this just below.
+                current = np.array(current_locations[i_sa])
+                transforms.append(transform.estimate(src=current, dst=target_locations))
+
+            # Apply best similarity transform for each subarray (via scikit-image.transform.warp()):
+            new_arrays = []
+            for i_sa, sa in enumerate(self.subarrays):
+                new_arrays.append(skt.warp(current_arrays[i_sa], transforms[i_sa], order=2, mode='edge'))
+            current_arrays = new_arrays
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 PLOTTING_FUNCTIONS____________________________________ = 0

@@ -243,16 +243,12 @@ def make_pill_mask(mask_shape, xa, ya, xb, yb, radius):
     return mask
 
 
-
-
-
-
 PROBABLY_NOT_USED_____________________________________ = 0
 
 
 def shift_2d_array(arr, dx, dy, fill_value=np.nan):
     """ Integer-pixel internal shift of data within a numpy array.
-        Nice, and tests well, but I don't think we can use it in mp_phot."""
+        Clever, and tests well, but I don't think we can use it in mp_phot."""
     new_arr = np.full_like(arr, fill_value)
     if dx == 0 and dy == 0:
         return arr.copy()

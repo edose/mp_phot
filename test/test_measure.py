@@ -6,6 +6,7 @@ import os
 # External packages:
 import pytest
 from astropy.nddata import CCDData
+import numpy as np
 
 # From this package:
 from mp_phot import measure
@@ -117,12 +118,75 @@ def test_class_mp_imagelist_2():
     assert imlist.mp_locations_all[0] == (pytest.approx(826.16, 0.5), pytest.approx(1077.5, 0.5))
     assert imlist.mp_locations_all[3] == (pytest.approx(1099.83, 0.5), pytest.approx(1090.55, 0.5))
 
-    # Test .make_subimages:
+    # Test .make_subimages():
     imlist = measure.MP_ImageList.from_fits(mp_directory, TEST_MP, TEST_AN, 'Clear',
                                             ref_star_locations, mp_locations, settings)
     imlist.calc_ref_star_radecs()
     imlist.calc_mp_radecs()
     imlist.make_subimages()
-    measure.plot_subimages('TEST new subimages', imlist)
+    # measure.plot_subimages('TEST new subimages', imlist)
     assert len(imlist.subimages) == 5
+    assert all([isinstance(si, CCDData) for si in imlist.subimages])
+    assert all([si.shape == imlist.subimages[0].shape for si in imlist.subimages])
+
+    # Test .wcs_align_subimages() and .trim_nans_from_subimages() together:
+    # print('===== Subimages before wcs alignment and trim nans:')
+    # radec_top_left = [tuple(si.wcs.all_pix2world([list((0, 0))], 0)[0]) for si in imlist.subimages]
+    # for i, radec in enumerate(radec_top_left):
+    #     print('  top left   ', str(i), '   {:.6f}'.format(radec[0]), '   {:.6f}'.format(radec[1]))
+    # y_br, x_br = imlist.subimages[0].shape
+    # radec_bottom_rt = [tuple(si.wcs.all_pix2world([list((x_br, y_br))], 0)[0]) for si in imlist.subimages]
+    # for i, radec in enumerate(radec_bottom_rt):
+    #     print('  bottom rt  ', str(i), '   {:.6f}'.format(radec[0]), '   {:.6f}'.format(radec[1]))
+    #
+    # imlist.wcs_align_subimages()
+    # imlist.trim_nans_from_subimages()
+    # print('===== Subimages after wcs alignment and trim nans:')
+    # measure.plot_subimages('TEST aligned & nan-trimmed subimages', imlist)  # ##############
+    # radec_top_left = [tuple(si.wcs.all_pix2world([list((0, 0))], 0)[0]) for si in imlist.subimages]
+    # for i, radec in enumerate(radec_top_left):
+    #     print('  top left   ', str(i), '   {:.6f}'.format(radec[0]), '   {:.6f}'.format(radec[1]))
+    # y_br, x_br = imlist.subimages[0].shape
+    # radec_bottom_rt = [tuple(si.wcs.all_pix2world([list((x_br, y_br))], 0)[0]) for si in imlist.subimages]
+    # for i, radec in enumerate(radec_bottom_rt):
+    #     print('  bottom rt  ', str(i), '   {:.6f}'.format(radec[0]), '   {:.6f}'.format(radec[1]))
+
+    # Test .get_subimage_locations():
+    imlist.get_subimage_locations()
+    assert len(imlist.subimage_mp_locations) == 5
+
+    # Test .make_subarrays():
+    subarray_list = imlist.make_subarrays()
+    assert isinstance(subarray_list, measure.SubarrayList)
+    assert len(subarray_list.subarrays) == 5
+    assert all([isinstance(sa.array, np.ndarray) for sa in subarray_list.subarrays])
+    assert all([isinstance(sa.mask,  np.ndarray) for sa in subarray_list.subarrays])
+    assert all([isinstance(sa.ref_star_locations, list) for sa in subarray_list.subarrays])
+    assert isinstance(subarray_list.subarrays[0].ref_star_locations, list)
+    assert isinstance(subarray_list.subarrays[0].ref_star_locations[0], tuple)
+    assert isinstance(subarray_list.subarrays[0].ref_star_locations[0][0], float)
+    assert all([isinstance(sa.mp_location, tuple) for sa in subarray_list.subarrays])
+    assert isinstance(subarray_list.subarrays[0].mp_location[0], float)
+
+
+def test_class_subarraylist():
+    # Set up everything up to spawning of subarrays:
+    mp_directory = os.path.join(TEST_SESSIONS_DIRECTORY, 'MP_' + TEST_MP, 'AN' + TEST_AN)
+    make_test_control_txt()
+    control_data = do_workflow.Control()
+    ref_star_locations = control_data['REF_STAR_LOCATION']
+    mp_locations = control_data['MP_LOCATION']
+    settings = do_workflow.Settings()
+    imlist = measure.MP_ImageList.from_fits(mp_directory, TEST_MP, TEST_AN, 'Clear',
+                                            ref_star_locations, mp_locations, settings)
+    imlist.calc_ref_star_radecs()
+    imlist.calc_mp_radecs()
+    imlist.make_subimages()
+    imlist.get_subimage_locations()
+    subarray_list = imlist.make_subarrays()
+
+    # Setup now done, test .make_matching_kernels():
+
+
+
 
