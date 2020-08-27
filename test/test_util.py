@@ -76,7 +76,7 @@ def test_calc_background_adus():
 def test_class_square():
     fullpath = os.path.join(MP_AN_DIRECTORY, 'MP_191-0001-Clear.fts')
     image = CCDData.read(fullpath, unit='adu')
-    # Constructor:
+    # Constructor (CCDData case):
     sq = util.Square(image, 313, 487, 40, None)
     assert isinstance(sq, util.Square)
     assert sq.x_center == 313
@@ -87,15 +87,24 @@ def test_class_square():
     assert sq.x_high == 313 + 40
     assert sq.y_low == 487 - 40
     assert sq.y_high == 487 + 40
-    assert isinstance(sq.image, CCDData)
+    # assert isinstance(sq.image, CCDData)
     assert sq.shape == (81, 81)
     assert all([sq.data[i, i] == image.data[487 + i - 40, 313 + i - 40] for i in range(sq.shape[0])])
     assert sq.is_valid is True
     assert sq.is_cropped is False
     assert isinstance(sq.data, np.ndarray)   # synonym
-    assert isinstance(sq.array, np.ndarray)  # synonym
+    # assert isinstance(sq.array, np.ndarray)  # synonym
     assert sq.parent.shape == image.shape
     assert sq.data[30, 40] == image.data[487 + 30, 313 + 40]  # nb: indices are [y,x]
+    assert sq.mask.shape == sq.shape
+    assert np.any(sq.mask) == False
+
+    # Constructor (numpy ndarray case):
+    array = image.data
+    sq = util.Square(array, 313, 487, 40, None)
+    # assert isinstance(sq.image, np.ndarray)
+    assert isinstance(sq.data, np.ndarray)
+    assert sq.is_valid is True
     assert sq.mask.shape == sq.shape
     assert np.any(sq.mask) == False
 
@@ -167,6 +176,13 @@ def test_class_square():
     c = sq.recentroid()
     assert c[0] == pytest.approx(359.92, abs=0.1)
     assert c[1] == pytest.approx(311.16, abs=0.1)
+    c = sq.recentroid(background_region=None)
+    assert c[0] == pytest.approx(363.64, abs=0.1)
+    assert c[1] == pytest.approx(314.67, abs=0.1)
+    sq = util.Square(image, 364, 315, 25, 3)  # centered 4,4 pixels from center of FAINT star, tiny mask.
+    c = sq.recentroid()
+    assert c[0] == pytest.approx(362.58, abs=0.1)
+    assert c[1] == pytest.approx(313.78, abs=0.1)
 
 
 def test_shift_2d_array():

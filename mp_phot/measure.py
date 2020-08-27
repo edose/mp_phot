@@ -185,8 +185,8 @@ class MP_ImageList:
         for (filename, x0, y0) in self.mp_locations[:2]:
             this_image = self[filename].image
             sq = util.Square(this_image, x0, y0, radius, mask_radius)
-            xc, yc = sq.recentroid()  # TODO: is recentroiding MP wise? I doubt it. ********************
-            ra, dec = tuple(this_image.wcs.all_pix2world([list((xc, yc))], 0)[0])
+            # xc, yc = sq.recentroid()
+            ra, dec = tuple(this_image.wcs.all_pix2world([list((x0, y0))], 0)[0])
             jd_mids.append(self[filename].jd_mid)
             ra_values.append(ra)
             dec_values.append(dec)
@@ -390,6 +390,8 @@ class Subarray:
         self.matching_kernel = None  # placeholder, will be a np.ndarray
         self.convolved_array = None  # placeholder, will be a np.ndarray
         self.realigned_array = None  # placeholder, will be a np.ndarray
+        self.realigned_ref_star_locations = []
+        self.realigned_mp_location = None
 
     def __str__(self):
         return 'Subarray object from ' + self.filename + ' of shape ' + str(self.array.shape)
@@ -428,29 +430,33 @@ class SubarrayList:
         """
         # Make ref star PSF arrays (very small kernel-sized images) [save as util.Square objects]:
         radius = 5 * self.settings['FWHM_NOMINAL']
+        mask_radius = 2.5 * self.settings['FWHM_NOMINAL']
         for sa in self.subarrays:
             subarray_psfs = []  # for this subarray (all ref stars).
             for x_center, y_center in sa.ref_star_locations:
-                square = util.Square(sa.array, x_center, y_center, radius)
+                # Adding a mask_radius makes this work more cleanly:
+                square = util.Square(sa.array.astype(np.float), x_center, y_center, radius, mask_radius)
                 bkgd_adus, _ = util.calc_background_adus(square.data)
                 bkdg_subtracted_array = square.data - bkgd_adus
-                # Vignette bkgd-subtracted array (reduce noise far from center, in lieu of sharp mask).
-                window_array = (SplitCosineBellWindow(alpha=0.5, beta=0.25))(square.shape)
+                # Vignette bkgd-subtracted array (reduce noise far from center, in lieu of sharp mask):
+                # Nullify mask after getting bkgd; window array will work better:
+                square.mask = np.full_like(square.mask, False, np.bool)
+                window_array = (SplitCosineBellWindow(alpha=0.4, beta=0.6))(square.shape)
                 raw_kernel = window_array * bkdg_subtracted_array
-                square.data = [raw / np.sum(raw) for raw in raw_kernel]  # normalized kernel.
+                square.data = raw_kernel / np.sum(raw_kernel)  # normalized kernel.
                 sa.ref_star_squares.append(square)
                 subarray_psfs.append(square)
-            sa.ref_star_squares.append()
+            sa.ref_star_squares = subarray_psfs
 
         # Calculate smallest appropriate sigma for target 2_D Gaussian PSF (everything scales from this):
         sigma_list = []
-        all_psfs = [sa.ref_star_squares for sa in self.subarrays]
-        for arr in np.flatten(all_psfs):
-            dps = data_properties(arr.data)
-            sigma_list.append(dps.semimajor_axis_sigma.value)
-            print('   ',  '{:.2f}'.format(dps.xcentroid.value),
-                          '{:.2f}'.format(dps.ycentroid.value),
-                          '{:.3f}'.format(dps.semimajor_axis_sigma.value))
+        for sa in self.subarrays:
+            for rss in sa.ref_star_squares:
+                dps = data_properties(rss.data)
+                sigma_list.append(dps.semimajor_axis_sigma.value)
+                print('   ',  '{:.2f}'.format(dps.xcentroid.value),
+                              '{:.2f}'.format(dps.ycentroid.value),
+                              '{:.3f}'.format(dps.semimajor_axis_sigma.value))
         max_sigma = max(sigma_list)
         target_sigma = 1.0 * max_sigma
 
@@ -458,32 +464,32 @@ class SubarrayList:
         for i_sa, sa in enumerate(self.subarrays):
             sa_matching_kernels = []
             for i_rs, rs in enumerate(sa.ref_star_locations):
-                edge_length = sa.shape[0]
+                this_psf = sa.ref_star_squares[i_rs]
+                edge_length = this_psf.shape[0]
                 y, x = np.mgrid[0:edge_length, 0:edge_length]
-                this_psf = all_psfs[i_sa][i_rs]
-                x_center_parent, y_center_parent = this_psf.recentroid()  # relative to parent.
+                # Relative to center; bkgd_region None to avoid masking away all pixels.
+                x_center_parent, y_center_parent = this_psf.recentroid(background_region=None)
                 x_center0 = x_center_parent - this_psf.x_low
                 y_center0 = y_center_parent - this_psf.y_low
                 # Make target PSFs (2-D Gaussian):
                 gaussian = Gaussian2D(1, x_center0, y_center0, target_sigma, target_sigma)  # function
                 target_psf = gaussian(x, y)  # ndarray
                 target_psf /= np.sum(target_psf)  # ensure normalized to sum 1.
-                matching_kernel = create_matching_kernel(this_psf, target_psf, CosineBellWindow(alpha=0.35))
+                # Make matching_kernel (to make this_psf match target_psf):
+                matching_kernel = create_matching_kernel(this_psf.data, target_psf,
+                                                         CosineBellWindow(alpha=0.35))
                 sa_matching_kernels.append(matching_kernel)
             sum_matching_kernels = np.sum(mk for mk in sa_matching_kernels)
-            sa.matching_kernel = sa_matching_kernels / np.sum(sum_matching_kernels)  # normlized to sum 1.
+            sa.matching_kernel = sum_matching_kernels / np.sum(sum_matching_kernels)  # normlized to sum 1.
 
     def convolve_subarrays(self):
         """ Convolve subarrays with matching kernels to render new subarrays with very nearly Gaussian
             ref star PSFs with very nearly uniform sigma.
         :return: None. Subarraylist.subarray objects are populated with convolved arrays.
-                 [list of lists of numpy.ndarrays]
         """
         new_subarrays = []
         for i_sa, sa in enumerate(self.subarrays):
-            convolved_array = convolve(sa.array.copy(), sa.matching_kernel, boundary='extend')
-            sa.convolved_array = Subarray(sa.filename, convolved_array, None, sa.jd_mid,
-                                          sa.exposure, sa.ref_star_locations, sa.mp_locations)
+            sa.convolved_array = convolve(sa.array.copy(), sa.matching_kernel, boundary='extend')
 
     def realign(self, max_iterations=3):
         """ Iteratively improve array alignments to millipixel precision.
@@ -492,9 +498,11 @@ class SubarrayList:
         :param max_iterations: [int]
         :return: None.
         """
+        # TODO: Go through this to make sure all data structures are of the types you think they are.
+        # TODO: Probably x,y tuples prob s/be lists instead (more compatible with scikit transform fns).
         # Set target ref star pixel x,y locations as the mean recentroided location, across subarrays:
         radius = 5 * self.settings['FWHM_NOMINAL']
-        target_locations = []
+        target_ref_star_locations = []
         for i_rs in range(len(self.subarrays[0].ref_star_locations)):
             x_list, y_list = [], []
             for sa in self.subarrays:
@@ -504,17 +512,18 @@ class SubarrayList:
                 x, y = square.recentroid()
                 x_list.append(x)
                 y_list.append(y)
-            target_locations.append(tuple([np.mean(x_list), np.mean(y_list)]))
-        target_locations = np.array(target_locations)
+            target_ref_star_locations.append(tuple([np.mean(x_list), np.mean(y_list)]))
+        target_ref_star_locations = np.array(target_ref_star_locations)
 
-        # Initialize the best/current subarrays
+        # Initialize the best/current subarrays and mp_locations:
         current_arrays = [sa.realigned_array for sa in self.subarrays]
+        current_mp_locations = [sa.mp_location for sa in self.subarrays]
 
-        for i_loop in range(max_iterations):
-            # Estimate misalignment (in millipixels RMS):
+        # Nested function (called at least twice):
+        def estimate_rms_misalignment(current_arrays, target_ref_star_locations, do_print=False):
             total_squared_misalignment = 0.0
             n_centers = 0
-            current_locations = []  # will be list[subarray][ref_star](x,y tuple).
+            current_ref_star_locations = []  # will be list[subarray][ref_star](x,y tuple).
             for sa in self.subarrays:
                 current_location = []
                 for i_rs in range(len(sa.ref_star_locations)):
@@ -523,31 +532,50 @@ class SubarrayList:
                                          sa.ref_star_locations[i_rs][1], radius)
                     x, y = square.recentroid()
                     current_location.append((x, y))
-                    x_target, y_target = target_locations[i_rs]
+                    x_target, y_target = target_ref_star_locations[i_rs]
                     total_squared_misalignment += 1000.0 * ((x - x_target)**2 + (y - y_target)**2)
                     n_centers += 1
-                current_locations.append(current_location)
+                current_ref_star_locations.append(current_location)
             rms_misalignment = sqrt(total_squared_misalignment / n_centers)
-
             # TODO: Print i_loop, old xy, target xy, rms misalignment.
+            return rms_misalignment, current_ref_star_locations
 
-            # Exit loop if converged:
+        rms_misalignment, current_ref_star_locations = \
+            estimate_rms_misalignment(current_arrays, target_ref_star_locations, do_print=True)
+
+        # Main realignment loop:
+        for i_loop in range(max_iterations):
             if rms_misalignment <= MAX_MISALIGNMENT_FOR_CONVERGENCE:
+                print('Converged and exit, i_loop=', str(i_loop))
                 break
 
             # Get best similarity transform for each subarray (scikit-image.transform.SimilarityTransform):
+            # (or could use skt.estimate_transform(ttype, src, dst, **kwargs)
             transforms = []
             for i_sa, sa in enumerate(self.subarrays):
                 transform = skt.SimilarityTransform()  # populate this just below.
-                current = np.array(current_locations[i_sa])
-                transforms.append(transform.estimate(src=current, dst=target_locations))
+                current = np.array(current_ref_star_locations[i_sa])
+                transforms.append(transform.estimate(src=current, dst=target_ref_star_locations))
 
             # Apply best similarity transform for each subarray (via scikit-image.transform.warp()):
             new_arrays = []
+            new_mp_locations = []
             for i_sa, sa in enumerate(self.subarrays):
                 new_arrays.append(skt.warp(current_arrays[i_sa], transforms[i_sa], order=2, mode='edge'))
+                # TODO: use skt.matrix_transform(coords, matrix) to get realigned MP locations.
+                new_mp_locations.append(skt.matrix_transform(current_mp_locations[i_sa], transforms[i_sa]))
+            # Save new arrays and MP locations as current (to use in next loop cycle, or as final values):
             current_arrays = new_arrays
+            current_mp_locations = new_mp_locations
 
+            rms_misalignment, current_ref_star_locations = \
+                estimate_rms_misalignment(current_arrays, target_ref_star_locations, do_print=True)
+
+        # Populate subarray objects:
+        for i_sa, sa in enumerate(self.subarrays):
+            sa.realigned_array = current_arrays[i_sa]
+            sa.realigned_ref_star_locations = current_ref_star_locations[i_sa]
+            sa.realigned_mp_location = current_mp_locations[i_sa]
 
 
 

@@ -186,7 +186,21 @@ def test_class_subarraylist():
     subarray_list = imlist.make_subarrays()
 
     # Setup now done, test .make_matching_kernels():
+    subarray_list.make_matching_kernels()
+    measure.plot_arrays('Matching kernels', [sa.matching_kernel for sa in subarray_list.subarrays],
+                        [sa.filename for sa in subarray_list.subarrays])
 
+    subarray_list.convolve_subarrays()
+    measure.plot_arrays('After convolution', [sa.convolved_array for sa in subarray_list.subarrays],
+                        [sa.filename for sa in subarray_list.subarrays])
+
+    subarray_list.realign()
+    for i_sa, sa in enumerate(subarray_list.subarrays):
+        for rsl in subarray_list.realigned_ref_star_locations[i_sa]:
+            print('Ref star locations(' + str(i_sa) + '): ' + str(rsl))
+        print('MP locations' + str(i_sa) + '): ' + str(sa.realigned_ref_star_location[i_sa]))
+    measure.plot_arrays('After realignment', [sa.realigned_array for sa in subarray_list.subarrays],
+                        [sa.filename for sa in subarray_list.subarrays])
 
 
 

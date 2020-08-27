@@ -88,22 +88,28 @@ class Square:
         self.y_low = max(0, self.y_center - self.radius)
         self.y_high = min(image.shape[0], self.y_center + self.radius)
 
-        self.image = image[self.y_low:self.y_high + 1,
-                           self.x_low:self.x_high + 1].copy()  # ndarray is [y,x]
-        self.shape = self.image.shape
+        cropped_image = image[self.y_low:self.y_high + 1,
+                              self.x_low:self.x_high + 1].copy()  # ndarray & CCDData are [y,x]
+        self.shape = cropped_image.shape
         expected_edge_size = 2 * square_radius + 1
         self.is_cropped = (self.shape != (expected_edge_size, expected_edge_size))
-        self.data = self.image.data
-        self.array = self.data  # synonym
-        self.parent = image  # handle to parent image
 
-        # Expand pre-existing mask if = None:
-        if self.image.mask is None:
-            self.mask = np.full_like(self.image.data, False, dtype=np.bool)
+        # Ensure self.data is a simple numpy ndarray, even if a masked array or CCDData obj was passed in.
+        if isinstance(cropped_image, np.ndarray):
+            self.data = cropped_image  # numpy ndarray (nb: self.image.data is only a "memoryview" -- ugh).
         else:
-            self.mask = self.image.mask.copy()
+            self.data = cropped_image.data  # numpy ndarray.
+        self.parent = image  # access to parent image (rarely needed)
 
-        # Make radius mask, then merge it with pre-existing mask:
+        # Ensure self.mask is present, usable, and a simple numpy ndarray of booleans:
+        if isinstance(cropped_image, np.ndarray):
+            self.mask = np.full_like(cropped_image.data, False, dtype=np.bool)  # image is ndarray.
+        elif cropped_image.mask is None:
+            self.mask = np.full_like(cropped_image.data, False, dtype=np.bool)  # image is CCDData, ma, etc.
+        else:
+            self.mask = cropped_image.mask.copy()  # if image is CCDData, masked array, etc.
+
+        # Make radius mask if requested, then merge it with any pre-existing mask:
         if mask_radius is not None:
             if mask_radius > 0:
                 circular_mask = np.fromfunction(lambda i, j: ((j - square_radius) ** 2 +
@@ -112,7 +118,7 @@ class Square:
                 self.mask = self.mask | circular_mask
 
     def __str__(self):
-        return 'Square object ' + str(self.radius) + 'x' + str(self.radius) +\
+        return 'Square object ' + str(self.shape[0]) + 'x' + str(self.shape[1]) +\
                ' at x,y = ' + '{:.3f}'.format(self.x_center) + ', ' + '{:.3f}'.format(self.y_center) + '.'
 
     def centroid(self, background_region='inverse'):
@@ -122,7 +128,7 @@ class Square:
                'inverse' --> use the mask's inverse to calculate the background (normal case for stars etc);
                'all' --> use the whole Square to calculate the background (might have its uses);
                'mask' --> use the mask to calculate the background (probably not useful); or
-               None or 'none' --> to not subtract background at all.
+               None or 'none' --> to not subtract background at all (by setting background to zero).
         :return: position (parent image) of local flux centroid. [2-tuple of floats]
         """
         if background_region is None:
@@ -145,20 +151,21 @@ class Square:
         y_centroid = self.y_low + y_square
         return x_centroid, y_centroid  # relative to parent image (0,0).
 
-    def recentroid(self, subtract_background=True, max_iterations=3):
+    def recentroid(self, background_region='inverse', max_iterations=3):
         """ Iterative search of centroid, valid even if square has to be resliced because centroid
             is farther than 1/2 pixel from expected position (common).
-        :param subtract_background:
+        :param background_region: same as for centroid(), i.e., one of these [string or None]:
+            'inverse' --> use the mask's inverse to calculate the background (normal case for stars etc);
+            'all' --> use the whole Square to calculate the background (might have its uses);
+            'mask' --> use the mask to calculate the background (probably not useful); or
+            None or 'none' --> to not subtract background at all (by setting background to zero).
         :param max_iterations: number of iterations allowed. [int]
         :return: x_centroid, y_centroid. [2-tuple of floats]
         """
         square = self
         x, y = None, None  # keep IDE happy
         for i in range(max_iterations):
-            if subtract_background:
-                x, y = square.centroid(background_region='inverse')
-            else:
-                x, y = square.centroid(background_region='none')
+            x, y = square.centroid(background_region=background_region)
             need_new_square = (abs(x - square.x_center) > 0.5 or abs(x - square.x_center) > 0.5)
             if need_new_square and i < max_iterations - 1:
                 square = Square(square.parent, x, y, self.radius, self.mask_radius)
@@ -178,8 +185,11 @@ def calc_background_adus(data, mask=None, invert_mask=False):
         this_mask = mask.copy()
         if invert_mask:
             this_mask = ~this_mask
-        bkgd_mask = make_source_mask(data, mask=this_mask, nsigma=2, npixels=5,
-                                     filter_fwhm=2, dilate_size=11)
+        try:
+           bkgd_mask = make_source_mask(data, mask=this_mask, nsigma=2, npixels=5,
+                                        filter_fwhm=2, dilate_size=11)
+        except ValueError:
+           iiii = 4
         bkgd_mask = bkgd_mask | this_mask
     else:
         bkgd_mask = make_source_mask(data, nsigma=2, npixels=5, filter_fwhm=2, dilate_size=11)
