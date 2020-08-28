@@ -203,4 +203,17 @@ def test_class_subarraylist():
                         [sa.filename for sa in subarray_list.subarrays])
 
 
+def test_scikit_transform_stuff():
+    import skimage.transform as skt
+    source_points = np.array([[1, 1], [1, 3], [5, 2]])
+    target = np.array([[1, 0.8], [0.9, 2.7], [4.8, 2.1]])
+    transform = skt.estimate_transform(ttype='similarity', src=source_points, dst=target)
+    realigned_source = transform(source_points)
+    print('\n', str(realigned_source))
+
+    realigned_target = transform.inverse(target)
+    print('\n\n', str(realigned_target))
+
+
+
 
