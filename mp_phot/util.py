@@ -186,10 +186,11 @@ def calc_background_adus(data, mask=None, invert_mask=False):
         if invert_mask:
             this_mask = ~this_mask
         try:
-           bkgd_mask = make_source_mask(data, mask=this_mask, nsigma=2, npixels=5,
-                                        filter_fwhm=2, dilate_size=11)
+            bkgd_mask = make_source_mask(data, mask=this_mask, nsigma=2, npixels=5,
+                                         filter_fwhm=2, dilate_size=11)
         except ValueError:
-           iiii = 4
+            bkgd_mask = np.full_like(this_mask, False, np.bool)
+            print(' >>>>> WARNING: background mask could not be made; blank mask used.')
         bkgd_mask = bkgd_mask | this_mask
     else:
         bkgd_mask = make_source_mask(data, nsigma=2, npixels=5, filter_fwhm=2, dilate_size=11)

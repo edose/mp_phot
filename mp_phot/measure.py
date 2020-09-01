@@ -2,23 +2,25 @@ __author__ = "Eric Dose :: New Mexico Mira Project, Albuquerque"
 
 # Python core packages:
 import os
-from math import pi, cos, sin, floor, ceil, sqrt
+from math import pi, cos, sin, floor, ceil, sqrt, log10, log
 
 # External packages:
 import numpy as np
+import numpy.ma as ma
 import pandas as pd
 import matplotlib.pyplot as plt
 import astropy.io.fits as apyfits
 from astropy.nddata import CCDData
 from astropy.wcs import WCS
 from astropy.stats import sigma_clipped_stats
+from astropy.modeling import models, fitting
 from astropy.modeling.models import Gaussian2D
 from astropy.convolution import convolve
 from astropy.visualization import LogStretch
 from astropy.visualization.mpl_normalize import ImageNormalize
-from ccdproc import trim_image, wcs_project
+from ccdproc import trim_image, wcs_project, Combiner
 from photutils import SplitCosineBellWindow, CosineBellWindow, \
-    data_properties, centroid_com, create_matching_kernel
+    data_properties, centroid_com, create_matching_kernel, make_source_mask
 import skimage.transform as skt
 
 # From this package:
@@ -27,7 +29,9 @@ from mp_phot import util
 PINPOINT_PLTSOLVD_TEXT = 'Plate has been solved by PinPoint'
 PIXEL_FACTOR_HISTORY_TEXT = 'Pixel scale factor applied by apply_pixel_scale_factor().'
 RADIANS_PER_DEGREE = pi / 180.0
-MAX_MISALIGNMENT_FOR_CONVERGENCE = 1000.0  # in millipixels
+MAX_MISALIGNMENT_FOR_CONVERGENCE = 10.0  # in millipixels
+FWHM_PER_SIGMA = 2.0 * sqrt(2.0 * log(2))
+
 
 def measure_mp():
     pass
@@ -209,9 +213,7 @@ class MP_ImageList:
             dec = dec_values[0] + dt * dec_per_second
             x, y = tuple(mp_image.image.wcs.all_world2pix([[ra, dec]], 0, ra_dec_order=True)[0])
             self.mp_radecs.append([ra, dec])
-            # self.mp_radecs.append((ra, dec))  # x,y & ra,dec tuples -> lists 2020-08-27.
             self.mp_locations_all.append([x, y])
-            #  self.mp_locations_all.append((x, y))  # x,y & ra,dec tuples -> lists 2020-08-27.
         # Compute exposure-start and -end RA,Dec and x,y location of MP for each image:
         for mp_image in self.mp_images:
             dt_start = (mp_image.jd_mid - jd_mids[0]) * 24 * 3600 - mp_image.exposure / 2.0
@@ -220,18 +222,15 @@ class MP_ImageList:
             x_start, y_start = tuple(mp_image.image.wcs.all_world2pix([[ra_start, dec_start]],
                                                                       0, ra_dec_order=True)[0])
             self.mp_start_radecs.append([ra_start, dec_start])
-            # self.mp_start_radecs.append((ra_start, dec_start))  # x,y & ra,dec tuples -> lists 2020-08-27.
             self.mp_start_locations.append([x_start, y_start])
-            # self.mp_start_locations.append((x_start, y_start))  # x,y & ra,dec tuples -> lists 2020-08-27.
+
             dt_end = dt_start + mp_image.exposure
             ra_end = ra_values[0] + dt_end * ra_per_second
             dec_end = dec_values[0] + dt_end * dec_per_second
             x_end, y_end = tuple(mp_image.image.wcs.all_world2pix([[ra_end, dec_end]],
                                                                   0, ra_dec_order=True)[0])
-            self.mp_end_radecs.append([ra_start, dec_start])
-            # self.mp_end_radecs.append((ra_start, dec_start))  # x,y & ra,dec tuples -> lists 2020-08-27.
-            self.mp_end_locations.append([x_start, y_start])
-            # self.mp_end_locations.append((x_start, y_start))  # x,y & ra,dec tuples -> lists 2020-08-27.
+            self.mp_end_radecs.append([ra_end, dec_end])
+            self.mp_end_locations.append([x_end, y_end])
 
     def make_subimages(self):
         """ Aligns only by whole-pixel (integer) shifts in x and y, no rotation or interpolation.
@@ -261,13 +260,13 @@ class MP_ImageList:
         x_min, x_max, y_min, y_max = [], [], [], []
         for i, mi in enumerate(self.mp_images):
             x_values = x_ref_star_raw[i].copy()  # ref star positions were calculated above.
-            y_values = x_ref_star_raw[i].copy()  # "
+            y_values = y_ref_star_raw[i].copy()  # "
             x_values.append(self.mp_locations_all[i][0])
             y_values.append(self.mp_locations_all[i][1])
             x_min.append(min(x_values) - x_offsets[i])
             x_max.append(max(x_values) - x_offsets[i])
             y_min.append(min(y_values) - y_offsets[i])
-            y_max.append(max(x_values) - y_offsets[i])
+            y_max.append(max(y_values) - y_offsets[i])
 
         # Calculate global x,y:min,max (rel to mp_images[0]), then recast relative to each mp_image:
         x_min_global_0 = int(floor(min(x_min)))
@@ -437,6 +436,7 @@ class Subarray:
         self.mp_start_location = mp_start_location
         self.mp_end_location = mp_end_location
         self.ref_star_squares = []   # placeholder, will be a list of util.Square objects.
+        self.fwhm = None
         self.matching_kernel = None             # placeholder, will be a 2-d np.ndarray
         self.convolved_array = None             # placeholder, will be a 2-d np.ndarray
         self.realigned_array = None             # placeholder, will be a 2-d np.ndarray
@@ -444,6 +444,10 @@ class Subarray:
         self.realigned_mp_location = None
         self.realigned_mp_start_location = None
         self.realigned_mp_end_location = None
+        self.realigned_mp_mask = None            # placeholder, float. Mask polarity: to reveal MP
+        self.realigned_mp_only_array = None      # placeholder, will be a 2-d np.ndarray
+        self.mp_flux = None                      # placeholder, float, best aperture-phot net flux (ADUs)
+        self.mp_sigma = None                     # placeholder, float, best aperture-phot flux sigma (ADUs).
 
     def __str__(self):
         return 'Subarray object from ' + self.filename + ' of shape ' + str(self.array.shape)
@@ -459,6 +463,8 @@ class SubarrayList:
         self.an = an
         self.filter = filter
         self.settings = settings
+        self.nominal_sigma = None
+        self.best_bkgd_array = None
 
         # Set up (private) dict of subarrays by filename key:
         self._dict_of_subarrays = dict()
@@ -504,12 +510,15 @@ class SubarrayList:
         # Calculate smallest appropriate sigma for target 2_D Gaussian PSF (everything scales from this):
         sigma_list = []
         for sa in self.subarrays:
+            fwhm_values = []
             for rss in sa.ref_star_squares:
                 dps = data_properties(rss.data)
                 sigma_list.append(dps.semimajor_axis_sigma.value)
                 print('   ',  '{:.2f}'.format(dps.xcentroid.value),
                               '{:.2f}'.format(dps.ycentroid.value),
                               '{:.3f}'.format(dps.semimajor_axis_sigma.value))
+                fwhm_values.append(dps.semimajor_axis_sigma.value)
+            sa.fwhm = np.median(np.array(fwhm_values))
         max_sigma = max(sigma_list)
         target_sigma = 1.0 * max_sigma
 
@@ -551,21 +560,27 @@ class SubarrayList:
         :param max_iterations: [int]
         :return: None.
         """
-        # TODO: Probably x,y tuples prob s/be lists instead (more compatible with scikit transform fns).
         # Set target ref star pixel x,y locations as the mean recentroided location, across subarrays:
         radius = 5 * self.settings['FWHM_NOMINAL']
         target_ref_star_locations = []
+        ref_star_sigmas = []
         for i_rs in range(len(self.subarrays[0].ref_star_locations)):
             x_list, y_list = [], []
             for sa in self.subarrays:
                 square = util.Square(sa.convolved_array,
                                      sa.ref_star_locations[i_rs][0],
-                                     sa.ref_star_locations[i_rs][1], radius)
+                                     sa.ref_star_locations[i_rs][1], radius, mask_radius=radius / 2)
                 x, y = square.recentroid()
                 x_list.append(x)
                 y_list.append(y)
-            target_ref_star_locations.append(tuple([np.mean(x_list), np.mean(y_list)]))
+                bkgd_adus, _ = util.calc_background_adus(square.data, square.mask, invert_mask=True)
+                dps = data_properties(square.data - bkgd_adus, square.mask)
+                sigma = dps.semimajor_axis_sigma.value  # in pixels.
+                # print(str(i_rs), '   sigma: ', '{:3f}'.format(sigma))
+                ref_star_sigmas.append(sigma)
+            target_ref_star_locations.append([np.mean(x_list), np.mean(y_list)])
         target_ref_star_locations = np.array(target_ref_star_locations)
+        nominal_sigma = max(ref_star_sigmas)  # for use in settings masks, below.
 
         # Initialize the best/current subarrays and mp_locations:
         current_arrays = [sa.convolved_array for sa in self.subarrays]
@@ -574,49 +589,58 @@ class SubarrayList:
         current_mp_start_locations = [sa.mp_start_location for sa in self.subarrays]
         current_mp_end_locations = [sa.mp_end_location for sa in self.subarrays]
 
-        # Nested function (called at least twice):
+        # Nested function (will be called below, at least twice):
         def estimate_rms_misalignment(current_arrays, current_ref_star_locations,
-                                      target_ref_star_locations, do_print=False):
+                                      target_ref_star_locations, mask_sigma=None, do_print=False):
             total_squared_misalignment = 0.0  # in millipixels.
             n_centers = 0
             recentroided_ref_star_locations = []
-            for i_sa, sa in enumerate(self.subarrays):
-                for i_rs in range(len(current_ref_star_locations)):
+            for i_sa, sa in enumerate(current_arrays):
+                sa_recentroided_ref_star_locations = []
+                for i_rs in range(len(current_ref_star_locations[i_sa])):
                     square = util.Square(current_arrays[i_sa],
-                                         current_ref_star_locations[i_rs][0],
-                                         current_ref_star_locations[i_rs][1], radius)
+                                         current_ref_star_locations[i_sa][i_rs][0],
+                                         current_ref_star_locations[i_sa][i_rs][1],
+                                         radius, mask_radius=3*mask_sigma)
                     x, y = square.recentroid()
-                    recentroided_ref_star_locations.append([x, y])
+                    sa_recentroided_ref_star_locations.append([x, y])
                     # x,y & ra,dec tuples -> lists 2020-08-27.
                     # recentroided_ref_star_locations.append((x, y))
                     x_target, y_target = target_ref_star_locations[i_rs]
-                    total_squared_misalignment += 1000.0 * ((x - x_target)**2 + (y - y_target)**2)
+                    total_squared_misalignment += ((x - x_target)**2 + (y - y_target)**2)
                     n_centers += 1
-            rms_misalignment = sqrt(total_squared_misalignment / n_centers)
+                recentroided_ref_star_locations.append(sa_recentroided_ref_star_locations)
+            rms_misalignment = 1000.0 * sqrt(total_squared_misalignment / n_centers)  # in millipixels.
 
             # Print  target xy, current xy, recentroided (new) xy.
             print('\n\nRMS Misalignment =', '{:.1f}'.format(rms_misalignment), 'millipixels.')
             for i_sa, sa in enumerate(self.subarrays):
                 print('    Subarray', i_sa)
-                for i_rs in range(len(current_ref_star_locations)):
-                    print('        target:', '{:.3f}'.format(target_ref_star_locations[i_rs][0]),
-                                             '{:.3f}'.format(target_ref_star_locations[i_rs][1]),
-                                             '  from {:.3f}'.format(current_ref_star_locations[i_rs][0]),
-                                             ' {:.3f}'.format(current_ref_star_locations[i_rs][1]),
-                                             '  to {:.3f}'.format(recentroided_ref_star_locations[i_rs][0]),
-                                             ' {:.3f}'.format(recentroided_ref_star_locations[i_rs][1]))
+                for i_rs in range(len(current_ref_star_locations[i_sa])):
+                    target_locs = target_ref_star_locations[i_rs]
+                    current_locs = current_ref_star_locations[i_sa][i_rs]
+                    recentroided_locs = recentroided_ref_star_locations[i_sa][i_rs]
+                    print('        target:', '{:.3f}'.format(target_locs[0]),
+                                             '{:.3f}'.format(target_locs[1]),
+                                             '  from {:.3f}'.format(current_locs[0]),
+                                             ' {:.3f}'.format(current_locs[1]),
+                                             '  to {:.3f}'.format(recentroided_locs[0]),
+                                             ' {:.3f}'.format(recentroided_locs[1]))
             return rms_misalignment, recentroided_ref_star_locations
 
         rms_misalignment, current_ref_star_locations = \
             estimate_rms_misalignment(current_arrays, current_ref_star_locations,
-                                      target_ref_star_locations, do_print=True)
+                                      target_ref_star_locations, mask_sigma=nominal_sigma,
+                                      do_print=True)
 
-        # Main realignment loop:
+        # ***** MAIN REALIGNMENT LOOP *******************************************:
         for i_loop in range(max_iterations):
             if rms_misalignment <= MAX_MISALIGNMENT_FOR_CONVERGENCE:
                 print('Converged and exit, i_loop=', str(i_loop))
                 break
 
+            # TODO: List transforms for each subarray, then combine transforms and apply only after loop.
+            # TODO: combined transforms should be applied to: all mp_locations.
             # Make best similarity transform for each subarray (scikit-image.transform.SimilarityTransform):
             transforms = []
             for i_sa, sa in enumerate(self.subarrays):
@@ -631,11 +655,12 @@ class SubarrayList:
             for i_sa, sa in enumerate(self.subarrays):
                 this_transform = transforms[i_sa]
                 # Realign all data arrays:
-                new_arrays.append(skt.warp(current_arrays[i_sa], this_transform, order=2, mode='edge'))
+                new_arrays.append(skt.warp(current_arrays[i_sa], inverse_map=this_transform.inverse,
+                                           order=2, mode='edge'))
                 # Transform (realign) all MP locations:
-                new_mp_locations.append(this_transform(current_mp_locations[i_sa]))
-                new_mp_start_locations.append(this_transform(current_mp_start_locations[i_sa]))
-                new_mp_end_locations.append(this_transform(current_mp_end_locations[i_sa]))
+                new_mp_locations.append(this_transform(current_mp_locations[i_sa])[0])
+                new_mp_start_locations.append(this_transform(current_mp_start_locations[i_sa])[0])
+                new_mp_end_locations.append(this_transform(current_mp_end_locations[i_sa])[0])
 
             # Save new arrays and MP locations as current (to use in next loop cycle, or as final values):
             # NB: new ref star locations come from estimate_rms_misalignment(), below.
@@ -646,32 +671,127 @@ class SubarrayList:
 
             rms_misalignment, current_ref_star_locations = \
                 estimate_rms_misalignment(current_arrays, current_ref_star_locations,
-                                          target_ref_star_locations, do_print=True)
+                                          target_ref_star_locations, mask_sigma=nominal_sigma,
+                                          do_print=True)
 
-        # When loop finished, save best realigned data in subarray objects:
+        # ***** END of MAIN REALIGNMENT LOOP ************************************:
+
+        # When loop finished, save best realigned data in objects:
         for i_sa, sa in enumerate(self.subarrays):
             sa.realigned_array = current_arrays[i_sa]
             sa.realigned_ref_star_locations = current_ref_star_locations[i_sa]
             sa.realigned_mp_location = current_mp_locations[i_sa]
             sa.realigned_mp_start_location = current_mp_start_locations[i_sa]
             sa.realigned_mp_end_location = current_mp_end_locations[i_sa]
+        self.nominal_sigma = nominal_sigma
 
+    def make_best_bkgd_array(self):
+        """ Make reference (MP-masked, background-subtracted) averaged subarray.
+            This is what this sliver of sky would look like, on average, if the MP were not there at all.
+        :return: None
+        """
+        ccddata_objects = []
+        for i_sa, sa in enumerate(self.subarrays):
+            bkgd_adus, _ = util.calc_background_adus(sa.realigned_array)
+            bkgd_subtr_array = sa.realigned_array - bkgd_adus
+            sa.realigned_mp_mask = util.make_pill_mask(bkgd_subtr_array.shape,
+                                                       sa.realigned_mp_start_location[0],
+                                                       sa.realigned_mp_start_location[1],
+                                                       sa.realigned_mp_end_location[0],
+                                                       sa.realigned_mp_end_location[1],
+                                                       5 * self.nominal_sigma)  # polarity: reveals MP.
+            ccddata_objects.append(CCDData(data=bkgd_subtr_array,
+                                           mask=~sa.realigned_mp_mask,   # mask polarity: hides MP.
+                                           unit='adu'))
+        averaged_ccddata = Combiner(ccddata_objects).average_combine()
+        n_masked_out = np.sum(averaged_ccddata.mask)
+        if n_masked_out > 0:
+            print(' >>>>> WARNING: averaged_subarray has', str(n_masked_out), 'pixels masked out.')
+        self.best_bkgd_array = averaged_ccddata.data
 
+    def make_mp_only_subarrays(self):
+        """ For each realigned, background-subtracted, MP-masked subarray, find (using ordinary least-sq):
+            source_factor (amount of star flux relative to averaged subarray source fluxes), and
+            background_offset (uniform background ADUs, relative to averaged subarray flat background).
+        :return: [None]
+        """
+        # Decompose subarrays into source component and background component (extract coefficients):
+        fit = fitting.LinearLSQFitter()
+        simple_linear = models.Linear1D()
+        indep_var_unmasked = np.ravel(self.best_bkgd_array)
+        source_factors, background_offsets = [], []
+        for i, sa in enumerate(self.subarrays):
+            dep_var_unmasked = np.ravel(sa.realigned_array)
+            to_keep = np.ravel(~sa.realigned_mp_mask)
+            indep_var = indep_var_unmasked[to_keep]
+            dep_var = dep_var_unmasked[to_keep]
+            # TODO: consider adding backgrounds' x- and y-gradients as fit parameters.
+            # TODO: when done with above, also add plots & ADU sigma from the 2 different fits (per image).
+            fitted_line = fit(simple_linear, indep_var, dep_var)
+            source_factors.append(fitted_line.slope.value)
+            background_offsets.append(fitted_line.intercept.value)
+            print('decomposition result:', str(i), sa.filename,
+                  str(fitted_line.slope.value), str(fitted_line.intercept.value))
 
+        # Using coefficients, generate nominal mp_free_subarrays:
+        for (sf, bo, sa) in zip(source_factors, background_offsets, self.subarrays):
+            fitted_whole_background = bo + sf * self.best_bkgd_array
+            sa.realigned_mp_only_array = sa.realigned_array - fitted_whole_background
 
+    def do_mp_aperture_photometry(self):
+        """  Do aperture photometry on best MP-only subarrays, using pill masks previously saved.
+        :return: [None]
+        """
+        for sa in self.subarrays:
+            this_masked_array = np.ma.array(data=sa.realigned_mp_only_array,
+                                            mask=sa.realigned_mp_mask)  # whole subarray.
+            mp_square = util.Square(this_masked_array,
+                                    sa.realigned_mp_location[0],
+                                    sa.realigned_mp_location[1],
+                                    10 * self.nominal_sigma)
+            masked_square = np.ma.array(data=mp_square.data,
+                                        mask=mp_square.mask)  # small square slice of subarray.
+            mp_aperture_flux = np.sum(masked_square)       # from masked sum.
+            mp_aperture_area = np.sum(masked_square.mask)  # pixel count.
+            bkgd_median, bkgd_std = util.calc_background_adus(data=masked_square.data,
+                                                              mask=masked_square.mask,
+                                                              invert_mask=True)  # True to hide MP.
+            sa.mp_flux = mp_aperture_flux - mp_aperture_area * bkgd_median
+            sigma2_ap = self.settings['CCD_GAIN'] * (mp_aperture_flux + mp_aperture_area * bkgd_median)
+            sigma2_bkgd = mp_aperture_area * bkgd_std
+            sa.mp_sigma = sqrt(sigma2_ap + sigma2_bkgd)
 
-
-
-
-
-
-
-
-
-
-
-
-
+    def make_df_mp_only(self):
+        """ Render df_mp_only.
+        :return: [None]
+        """
+        # Make lists to hold data for dataframe columns:
+        n = len(self.subarrays)
+        col_fitsfile = [sa.filename for sa in self.subarrays]
+        col_source_id = n * [self.mp_id]
+        col_type = n * ['MP']
+        col_instmag = [-2.5 * log10(sa.mp_flux / sa.exposure) for sa in self.subarrays]
+        col_instmagsigma = [-2.5 * log10(sa.mp_sigma / sa.mp_flux) for sa in self.subarrays]
+        col_fwhm = [sa.fwhm for sa in self.subarrays]
+        col_skyadu = None
+        col_xcentroid = None  # this must come from the original images
+        col_ycentroid = None  # "
+        col_x1024 = [(x - xcenter) / 1024.0 for x in col_xcentroid]
+        col_y1024 = [(y - ycenter) / 1024.0 for x in col_ycentroid]
+        col_vignette = [dx**2 + dy**2 for (dx, dy) in zip(col_x1024, col_y1024)]
+        df_mp_only = pd.DataFrame({'FITSfile': col_fitsfile,
+                                   'SourceID': col_source_id,
+                                   'Type': col_type,
+                                   'InstMag': col_instmag,
+                                   'InstMagSigma': col_instmagsigma,
+                                   'FWHM': col_fwhm,
+                                   'SkyADU': col_skyadu,
+                                   'XCentroid': col_xcentroid,
+                                   'YCentroid': col_ycentroid,
+                                   'X1024': col_x1024,
+                                   'Y1024': col_y1024,
+                                   'Vignette': col_vignette})
+        return df_mp_only
 
 
 
@@ -733,7 +853,19 @@ def plot_arrays(figtitle, arrays, plot_titles):
                 ax = axes[i_row, i_col]
                 ax.remove()
             plt.draw()
-    plt.show()
+    # plt.show()
+
+
+def plot_one_array(figtitle, array):
+    fig, ax = plt.subplots(1, 1, figsize=(7, 5))
+    source_mask = make_source_mask(array, nsigma=2, npixels=5, filter_fwhm=2, dilate_size=11)
+    _, median, _ = sigma_clipped_stats(array, sigma=3.0, mask=source_mask)
+    plot_minimum = median
+    plot_maximum = np.max(array)
+    norm = ImageNormalize(vmin=plot_minimum, vmax=plot_maximum, stretch=LogStretch(250.0))
+    ax.imshow(array, origin='upper', cmap='Greys', norm=norm)
+    fig.suptitle(figtitle)
+    # plt.show()
 
 
 # def plot_arrays(figtitle, arrays, plot_titles):

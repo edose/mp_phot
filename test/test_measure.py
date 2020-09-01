@@ -5,8 +5,9 @@ import os
 
 # External packages:
 import pytest
-from astropy.nddata import CCDData
 import numpy as np
+from astropy.nddata import CCDData
+import matplotlib.pyplot as plt
 
 # From this package:
 from mp_phot import measure
@@ -174,7 +175,13 @@ def test_class_subarraylist():
     mp_directory = os.path.join(TEST_SESSIONS_DIRECTORY, 'MP_' + TEST_MP, 'AN' + TEST_AN)
     make_test_control_txt()
     control_data = do_workflow.Control()
-    ref_star_locations = control_data['REF_STAR_LOCATION']
+    # ref_star_locations = control_data['REF_STAR_LOCATION']
+    # ref_star_locations = [['MP_191-0001-Clear.fts',  790.6, 1115.0],
+    #                       ['MP_191-0028-Clear.fts', 1583.2, 1192.3]]  # 28: far but bright
+    # ref_star_locations = [['MP_191-0001-Clear.fts',  790.6, 1115.0],
+    #                       ['MP_191-0028-Clear.fts', 1392.7, 1063.4]]  # 28: v.isolated, mid-distance
+    ref_star_locations = [['MP_191-0001-Clear.fts',  790.6, 1115.0],
+                          ['MP_191-0028-Clear.fts', 1198.5, 1084.4]]  # 28: close but faint
     mp_locations = control_data['MP_LOCATION']
     settings = do_workflow.Settings()
     imlist = measure.MP_ImageList.from_fits(mp_directory, TEST_MP, TEST_AN, 'Clear',
@@ -182,37 +189,44 @@ def test_class_subarraylist():
     imlist.calc_ref_star_radecs()
     imlist.calc_mp_radecs()
     imlist.make_subimages()
+    # measure.plot_subimages('Initial SUBIMAGES', imlist)
     imlist.get_subimage_locations()
     subarray_list = imlist.make_subarrays()
+    # measure.plot_subarrays('Initial SUBARRAYS', subarray_list)
 
     # Setup now done, test .make_matching_kernels():
     subarray_list.make_matching_kernels()
-    measure.plot_arrays('Matching kernels', [sa.matching_kernel for sa in subarray_list.subarrays],
-                        [sa.filename for sa in subarray_list.subarrays])
+    # measure.plot_arrays('Matching kernels', [sa.matching_kernel for sa in subarray_list.subarrays],
+    #                     [sa.filename for sa in subarray_list.subarrays])
 
     subarray_list.convolve_subarrays()
-    measure.plot_arrays('After convolution', [sa.convolved_array for sa in subarray_list.subarrays],
-                        [sa.filename for sa in subarray_list.subarrays])
+    # measure.plot_arrays('After convolution', [sa.convolved_array for sa in subarray_list.subarrays],
+    #                     [sa.filename for sa in subarray_list.subarrays])
 
     subarray_list.realign()
     for i_sa, sa in enumerate(subarray_list.subarrays):
-        for rsl in subarray_list.realigned_ref_star_locations[i_sa]:
+        for rsl in sa.realigned_ref_star_locations:
             print('Ref star locations(' + str(i_sa) + '): ' + str(rsl))
-        print('MP locations' + str(i_sa) + '): ' + str(sa.realigned_ref_star_location[i_sa]))
+        print('MP locations' + str(i_sa) + '): ' + str(sa.realigned_ref_star_locations))
     measure.plot_arrays('After realignment', [sa.realigned_array for sa in subarray_list.subarrays],
                         [sa.filename for sa in subarray_list.subarrays])
 
+    subarray_list.make_best_bkgd_array()
+    measure.plot_one_array("Averaged (MP-free) Subarray", subarray_list.best_bkgd_array)
+    plt.show()
 
-def test_scikit_transform_stuff():
-    import skimage.transform as skt
-    source_points = np.array([[1, 1], [1, 3], [5, 2]])
-    target = np.array([[1, 0.8], [0.9, 2.7], [4.8, 2.1]])
-    transform = skt.estimate_transform(ttype='similarity', src=source_points, dst=target)
-    realigned_source = transform(source_points)
-    print('\n', str(realigned_source))
 
-    realigned_target = transform.inverse(target)
-    print('\n\n', str(realigned_target))
+
+# def test_scikit_transform_stuff():
+#     import skimage.transform as skt
+#     source_points = np.array([[1, 1], [1, 3], [5, 2]])
+#     target = np.array([[1, 0.8], [0.9, 2.7], [4.8, 2.1]])
+#     transform = skt.estimate_transform(ttype='similarity', src=source_points, dst=target)
+#     realigned_source = transform(source_points)
+#     print('\n', str(realigned_source))
+#
+#     realigned_target = transform.inverse(target)
+#     print('\n\n', str(realigned_target))
 
 
 
