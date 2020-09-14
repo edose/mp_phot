@@ -204,15 +204,31 @@ def test_class_subarraylist():
     #                     [sa.filename for sa in subarray_list.subarrays])
 
     subarray_list.realign()
-    for i_sa, sa in enumerate(subarray_list.subarrays):
-        for rsl in sa.realigned_ref_star_locations:
-            print('Ref star locations(' + str(i_sa) + '): ' + str(rsl))
-        print('MP locations' + str(i_sa) + '): ' + str(sa.realigned_ref_star_locations))
-    measure.plot_arrays('After realignment', [sa.realigned_array for sa in subarray_list.subarrays],
-                        [sa.filename for sa in subarray_list.subarrays])
+    # for i_sa, sa in enumerate(subarray_list.subarrays):
+    #     for rsl in sa.realigned_ref_star_locations:
+    #         print('Ref star locations(' + str(i_sa) + '): ' + str(rsl))
+    #     print('MP locations' + str(i_sa) + '): ' + str(sa.realigned_ref_star_locations))
+    # measure.plot_arrays('After realignment', [sa.realigned_array for sa in subarray_list.subarrays],
+    #                     [sa.filename for sa in subarray_list.subarrays])
 
     subarray_list.make_best_bkgd_array()
-    measure.plot_one_array("Averaged (MP-free) Subarray", subarray_list.best_bkgd_array)
+    # measure.plot_one_array("Averaged (MP-free) Subarray", subarray_list.best_bkgd_array)
+
+    subarray_list.make_mp_only_subarrays()
+    measure.plot_arrays('MP-only (bkgd-subtr) subarrays',
+                        [sa.realigned_mp_only_array for sa in subarray_list.subarrays],
+                        [sa.filename for sa in subarray_list.subarrays])
+
+    subarray_list.do_mp_aperture_photometry()
+    for i_sa, sa in enumerate(subarray_list.subarrays):
+        print(str(i_sa), 'MP flux=', '{:.3f}'.format(sa.mp_flux),
+              '   flux sigma=', '{:.3f}'.format(sa.mp_sigma))
+
+    df_mp_only = subarray_list.make_df_mp_only()
+    iiii = 4
+
+    # subarray_list.convolve_full_arrays([mpi.image.data for mpi in imlist.mp_images[0:1]])
+
     plt.show()
 
 

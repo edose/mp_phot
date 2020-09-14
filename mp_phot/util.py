@@ -7,6 +7,8 @@ from math import floor, sqrt
 # External packages:
 import numpy as np
 import pandas as pd
+from astropy.modeling.models import Gaussian2D
+import astropy.io.fits as fits
 from astropy.stats import sigma_clipped_stats
 from ccdproc import wcs_project, trim_image, Combiner
 from photutils import make_source_mask, centroid_com

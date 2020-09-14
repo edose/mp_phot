@@ -16,6 +16,7 @@ from astropy.wcs import WCS
 
 # From this package:
 from .util import dict_from_directives_file, get_mp_filenames
+from .measure import MP_ImageList
 
 # TODO: move most of these path and other constants to defaults.txt (or possibly to instrument file):
 DEFAULTS_FILE_FULLPATH = 'C:/Dev/mp_phot/data/defaults.txt'   # TODO: make this relative to package path.
@@ -26,6 +27,8 @@ CONTROL_FILENAME = 'control.txt'
 DF_OBS_ALL_FILENAME = 'df_obs_all.csv'
 DF_IMAGES_ALL_FILENAME = 'df_images_all.csv'
 DF_COMPS_ALL_FILENAME = 'df_comps_all.csv'
+
+
 
 RADIANS_PER_DEGREE = pi / 180.0
 PIXEL_FACTOR_HISTORY_TEXT = 'Pixel scale factor applied by apply_pixel_scale_factor().'
@@ -282,6 +285,41 @@ def assess():
 def measure():
     # This will (1) prepare data for and call measure_mp() and measure_comps() from measure.py, then
     # (2) prepare the 3 key dataframes for the call to do_mp_phot().
+    """ Prototype for testing; must be adapted deeply before production use. """
+    MP_PHOT_ROOT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    TEST_SESSIONS_DIRECTORY = os.path.join(MP_PHOT_ROOT_DIRECTORY, 'test', '$sessions_for_test')
+    TEST_MP = '191'
+    TEST_AN = '20200617'
+    mp_directory = os.path.join(TEST_SESSIONS_DIRECTORY, 'MP_' + TEST_MP, 'AN' + TEST_AN)
+    from test.test_do_workflow import make_test_control_txt
+    make_test_control_txt()
+    control_data = Control()
+    ref_star_locations = [['MP_191-0001-Clear.fts',  790.6, 1115.0],
+                          ['MP_191-0028-Clear.fts', 1198.5, 1084.4]]  # 28: close but faint
+    mp_locations = control_data['MP_LOCATION']
+    settings = Settings()
+
+    # MP (minor planet) stack of calls:
+    imlist = MP_ImageList.from_fits(mp_directory, TEST_MP, TEST_AN, 'Clear',
+                                    ref_star_locations, mp_locations, settings)
+    imlist.calc_ref_star_radecs()
+    imlist.calc_mp_radecs()
+    imlist.make_subimages()
+    imlist.get_subimage_locations()
+    subarray_list = imlist.make_subarrays()
+    subarray_list.make_matching_kernels()
+    subarray_list.convolve_subarrays()
+    subarray_list.realign()
+    subarray_list.make_best_bkgd_array()
+    subarray_list.make_mp_only_subarrays()
+    subarray_list.do_mp_aperture_photometry()
+    df_mp_only = subarray_list.make_df_mp_only()
+    # subarray_list.convolve_full_arrays([mpi.image.data for mpi in imlist.mp_images[0:1]])
+
+    # Comp-star stack of calls:
+    pass
+
+    # Align and combine MP and comp-star dataframes, write them to csv files:
     pass
 
 
@@ -294,7 +332,31 @@ CLASS_DEFINITIONS__________________________________________ = 0
 
 
 class Settings:
-    """ Holds (1) instrument info and (2) defaults for workflow in one dictionary 'data'. [dict] """
+    """ Holds (1) instrument info and (2) defaults for workflow in one dictionary 'data'. [dict]
+        Supplied by user in text file stored at DEFAULTS_FILE_FULLPATH.
+        Most items remain unchanged from night to night.
+        Expected items:
+            INSTRUMENT: name of instrument, e.g., 'Borea' [string]
+            MP_RI_COLOR: default MP color in Sloan r-i, e.g. +0.22 [float]
+            MIN_CATALOG_R_MAG: default minimum catalog comp-star mag in Sloan r [float]
+            MAX_CATALOG_R_MAG: default maximum catalog comp-star mag in Sloan r [float]
+            MAX_CATALOG_DR_MMAG: default maximum catalog comp-star mag uncertainty in Sloan r [float]
+            MIN_CATALOG_RI_COLOR: default minimum catalog comp-star color in Sloan r-i [float]
+            MAX_CATALOG_RI_COLOR: default maximum catalog comp-star color in Sloan r-i [float]
+            FIT_TRANSFORM: True to include transform in comp-star regression model [boolean]
+            FIT_EXTINCTION: True to include extinction in comp-star regression model [boolean]
+            FIT_VIGNETTE: True to include parabolic vignetting in comp-star regression model [boolean]
+            FIT_XY: True to include linear X- and Y-gradients in comp-star regression model [boolean]
+            FIT_JD: True to include linear time term (drift) in comp-star regression model [boolean]
+            PIXEL_SHIFT_TOLERANCE: maximum shift expected between images, in number of pixels [float]
+            FWHM_NOMINAL: nominal comp-star full-width at half-max, to get computations started [float]
+            CCD_GAIN: in electrons per ADU, e.g., 1.57 [float]
+            ADU_SATURATION: ADU/pixel above which signals is expected saturated, e.g., 54000 [float]
+            DEFAULT_FILTER: default MP filter, e.g., 'Clear' [string]
+            PINPOINT_PIXEL_SCALE_FACTOR: real vs Pinpoint center pixel scale, e.g., 0.997 [float]
+            TRANSFORM: list of default transform directives, [list of lists] e.g.,
+                [['Clear', 'SR', 'SR-SI', 'Use', '+0.36', '-0.54'], ['BB', 'SR', 'SR-SI', 'Fit=2']]
+    """
     def __init__(self, instrument_name=None):
         # Read and parse defaults.txt (only needed to construct control.txt stub):
         defaults_dict = dict_from_directives_file(DEFAULTS_FILE_FULLPATH)
@@ -355,7 +417,31 @@ class Settings:
 
 
 class Control:
-    """ Holds data from control.txt file. Assumes current working directory is set by start(). """
+    """ Holds data from control.txt file. Assumes current working directory is set by start().
+        Supplied by user in text file 'control.txt' within session directory.
+        Modified by user to control actual data reduction, including comp start selection
+            and the fit model, including terms to include, MP color, and transform type.
+        Expected items:
+        FIT_EXTINCTION: True if user includes extinction in comp-star regression model. [boolean]
+        FIT_JD: True if user includes linear time term (drift) in comp-star regression model. [boolean]
+        FIT_TRANSFORM: True if user includes transform in comp-star regression model. [boolean]
+        FIT_VIGNETTE: True if user includes parabolic vignetting in comp-star regression model. [boolean]
+        FIT_XY: True if user includes linear X- and Y-gradients in comp-star regression model. [boolean]
+        MAX_CATALOG_DR_MMAG: session's maximum catalog comp-star mag uncertainty in Sloan r [float]
+        MAX_CATALOG_R_MAG: session's maximum catalog comp-star mag in Sloan r [float]
+        MIN_CATALOG_R_MAG: session's maximum catalog comp-star mag in Sloan r [float]
+        MAX_CATALOG_RI_COLOR: session's default maximum catalog comp-star color in Sloan r-i [float]
+        MIN_CATALOG_RI_COLOR: session's default minimum catalog comp-star color in Sloan r-i [float]
+        MP_RI_COLOR: user's session MP color in Sloan r-i, e.g. +0.22 [float]
+        MP_LOCATION: 2-list of MP location specifications, from an early and a late image of the session,
+            e.g., [['MP_191-0001-Clear.fts', 826.4, 1077.4], ['MP_191-0028-Clear.fts', 1144.3, 1099.3]]
+        REF_STAR_LOCATION: list of at least 2 ref star location specifications, usually in the same image,
+            e.g., [['MP_191-0001-Clear.fts', 790.6, 1115.0],
+                   ['MP_191-0001-Clear.fts', 819.3, 1011.7],
+                   ['MP_191-0001-Clear.fts', 1060.4, 1066.0]]
+        IS_VALID: True if file 'control.txt' parsed without errors. [boolean]
+        ERRORS: Errors encountered while parsing file 'control.txt'; typically []. [list of strings]
+    """
     def __init__(self):
         context = get_context()
         if context is None:
