@@ -16,9 +16,13 @@ from photutils import make_source_mask, centroid_com
 VALID_FITS_FILE_EXTENSIONS = ['.fits', '.fit', '.fts']
 
 
+_____SERVICE_FUNCTIONS____________________________ = 0
+
 def get_mp_filenames(directory):
     """ Get only filenames in directory like MP_xxxxx.[ext], where [ext] is a legal FITS extension.
-        The order of the return list is alphabetical (which may or may not be in time order). """
+        The order of the return list is alphabetical (which may or may not be in time order).
+    :param directory: path to directory holding MP FITS files. [string]
+    """
     all_filenames = pd.Series([e.name for e in os.scandir(directory) if e.is_file()])
     extensions = pd.Series([os.path.splitext(f)[-1].lower() for f in all_filenames])
     is_fits = [ext.lower() in VALID_FITS_FILE_EXTENSIONS for ext in extensions]
@@ -27,47 +31,149 @@ def get_mp_filenames(directory):
     mp_filenames.sort()
     return mp_filenames
 
-
-def dict_from_directives_file(fullpath):
-    """ For each directive line in file, return a value [string] or list of values [list of strings].
-        Returned dict includes ONLY strings exactly as given without context, e.g., '16' for 16 and 'Yes'.
-        Simple engine: no interpretation or checking: it is up to the calling routine to cast into needed
-        types, to interpret these string values, and do any checking on their presence and/or values.
-    :param fullpath: [string]
-    :return: dict of key=directive [string]; value=value [string] or list of values [list of strings].
+def process_mp_and_an(mp_id, an):
+    """ Return MP id and Astronight id in usable (internal) forms.
+    :param mp_id: raw MP identification, either number or unnumbered ID. [int or string]
+    :param an: Astronight ID yyyymmdd. [int or string]
+    :return: 2-tuple (mp_id, an_string) [tuple of 2 strings]:
+             mp_id has '#' prepended for numbered MP, '*' prepended for ID of unnumbered MP.
+             an_string is always an 8 character string 'yyyymmdd' representing Astronight.
     """
-    with open(fullpath) as f:
-        lines = f.readlines()
-    lines = [line for line in lines if line is not None]  # remove empty list elements
-    lines = [line.split(";")[0] for line in lines]  # remove all comments
-    lines = [line.strip() for line in lines]  # remove lead/trail blanks
-    lines = [line for line in lines if line != '']  # remove empty lines
-    lines = [line for line in lines if line.startswith('#')]  # keep only directive lines
-    data_dict = dict()
-    for line in lines:
-        splitline = line.split(maxsplit=1)
-        if len(splitline) != 2:
-            print(' >>>>> ERROR: File', fullpath, 'cannot parse line', line)
-        else:
-            directive = (splitline[0])[1:].strip().upper()
-            value = splitline[1].strip()
-            previous_value = data_dict.get(directive, None)
-            if previous_value is None:
-                data_dict[directive] = value  #
+    # Handle mp_id:
+    if isinstance(mp_id, int):
+        mp_id = ('#' + str(mp_id))  # mp_id like '#1108' for numbered MP 1108 (if passed in as int).
+    else:
+        if isinstance(mp_id, str):
+            try:
+                _ = int(mp_id)  # a test only
+            except ValueError:
+                mp_id = '*' + mp_id   # mp_id like '*1997 TX3' for unnumbered MP ID.
             else:
-                if not isinstance(previous_value, list):
-                    data_dict[directive] = [data_dict[directive]]  # ensure previous value is a list.
-                data_dict[directive].append(value)  # append list (not its indiv elements) into value list.
-    return data_dict
+                mp_id = '#' + mp_id  # mp_id like '#1108' for numbered MP 1108 (if passed in as string).
+        else:
+            print(' >>>>> ERROR: mp_id must be an int or string')
+            return None
+    print('MP ID =', mp_id + '.')
+
+    # Handle an:
+    an_string = str(an).strip()
+    try:
+        _ = int(an_string)  # test only
+    except ValueError:
+        print(' >>>>> ERROR: an must be an int, or a string representing an integer.')
+        return None
+    print('AN =', an_string)
+    return mp_id, an_string
 
 
-IMAGE_AND_SUBIMAGE_UTILS_____________________________________ = 0
+def fits_header_value(hdu, key):
+    # Adapted from package photrix, class FITS.header_value.
+    """
+    :param hdu: astropy fits header/data unit object.
+    :param key: FITS header key [string] or list of keys to try [list of strings]
+    :return: value of FITS header entry, typically [float] if possible, else None. [string or None]
+    """
+    if isinstance(key, str):  # case of single key to try.
+        return hdu.header.get(key, None)
+    for k in key:             # case of list of keys to try.
+        value = hdu.header.get(k, None)
+        if value is not None:
+            return value
+    return None
+
+
+def fits_is_plate_solved(hdu):
+    # Adapted loosely from package photrix, class FITS. Returns boolean.
+    # TODO: tighten these tests, prob. by checking for reasonable numerical values.
+    plate_solution_keys = ['CD1_1', 'CD1_2', 'CD2_1', 'CD2_2', 'CRVAL1', 'CRVAL2', 'CRPIX1', 'CRPIX2']
+    values = [fits_header_value(hdu, key) for key in plate_solution_keys]
+    for v in values:
+        if v is None:
+            return False
+        if not isinstance(v, float):
+            try:
+                _ = float(v)
+            except ValueError:
+                return False
+            except TypeError:
+                return False
+    return True
+
+
+def fits_is_calibrated(hdu):
+    # Adapted from package photrix, class FITS. Requires calibration by Maxim 5 or 6, or by TheSkyX.
+    # Returns boolean.
+    # First, define all calibration functions as internal, nested functions:
+    def _is_calibrated_by_maxim_5_or_6(hdu):
+        calibration_value = fits_header_value(hdu, 'CALSTAT')
+        if calibration_value is not None:
+            if calibration_value.strip().upper() == 'BDF':
+                return True
+        return False
+    # If any is function signals valid, then fits is calibrated:
+    is_calibrated_list = [_is_calibrated_by_maxim_5_or_6(hdu)]  # expand later if more calibration fns.
+    return any([is_cal for is_cal in is_calibrated_list])
+
+
+def fits_focal_length(hdu):
+    # Adapted from package photrix, class FITS. Returns float if valid, else None.
+    fl = fits_header_value(hdu, 'FOCALLEN')
+    if fl is not None:
+        return fl  # in millimeters.
+    x_pixel_size = fits_header_value(hdu, 'XPIXSZ')
+    y_pixel_size = fits_header_value(hdu, 'YPIXSZ')
+    x_pixel_scale = fits_header_value(hdu, 'CDELT1')
+    y_pixel_scale = fits_header_value(hdu, 'CDELT2')
+    if any([value is None for value in [x_pixel_size, y_pixel_size, x_pixel_scale, y_pixel_scale]]):
+        return None
+    fl_x = x_pixel_size / abs(x_pixel_scale) * (206265.0 / (3600 * 1000))
+    fl_y = y_pixel_size / abs(y_pixel_scale) * (206265.0 / (3600 * 1000))
+    return (fl_x + fl_y) / 2.0
+
+
+# def dict_from_directives_file(fullpath):
+#     """ For each directive line in file, return a value [string] or list of values [list of strings].
+#         Returned dict includes ONLY strings exactly as given without context, e.g., '16' for 16 and 'Yes'.
+#         Simple engine: no interpretation or checking: it is up to the calling routine to cast into needed
+#         types, to interpret these string values, and do any checking on their presence and/or values.
+#     :param fullpath: [string]
+#     :return: dict of key=directive [string]; value=value [string] or list of values [list of strings].
+#     """
+#     # TODO: Remove this, after .ini facility tests OK.
+#     with open(fullpath) as f:
+#         lines = f.readlines()
+#     lines = [line for line in lines if line is not None]  # remove empty list elements
+#     lines = [line.split(";")[0] for line in lines]  # remove all comments
+#     lines = [line.strip() for line in lines]  # remove lead/trail blanks
+#     lines = [line for line in lines if line != '']  # remove empty lines
+#     lines = [line for line in lines if line.startswith('#')]  # keep only directive lines
+#     data_dict = dict()
+#     for line in lines:
+#         splitline = line.split(maxsplit=1)
+#         if len(splitline) != 2:
+#             print(' >>>>> ERROR: File', fullpath, 'cannot parse line', line)
+#         else:
+#             directive = (splitline[0])[1:].strip().upper()
+#             value = splitline[1].strip()
+#             previous_value = data_dict.get(directive, None)
+#             if previous_value is None:
+#                 data_dict[directive] = value  #
+#             else:
+#                 if not isinstance(previous_value, list):
+#                     data_dict[directive] = [data_dict[directive]]  # ensure previous value is a list.
+#                 data_dict[directive].append(value)  # append list (not its indiv elements) into value list.
+#     return data_dict
+
+
+_____IMAGE_and_SUBIMAGE_UTILS_____________________________________ = 0
 
 
 class Square:
+    """ Copy of image slice, array if not cropped at edge. Centered on an integer pixel position.
+        Added circular mask if requested (combined with original mask if present).
+    """
     def __init__(self, image, x_center, y_center, square_radius, mask_radius=None):
-        """ Copy of image slice, array if not cropped at edge. Centered on an integer pixel position.
-            Added circular mask if requested (combined with original mask if present).
+        """
         :param image: source image. [masked image-like object, e.g., CCDData, but *not* MP_Image which is a
                    wrapper around CCDData.]
         :param x_center: in pixels. Rounded to nearest integer. [float]
@@ -120,6 +226,7 @@ class Square:
                 self.mask = self.mask | circular_mask
 
     def __str__(self):
+        """ Return descriptor of this Square object, as Square object 50x50 at x,y = 123.456, 234.543'. """
         return 'Square object ' + str(self.shape[0]) + 'x' + str(self.shape[1]) +\
                ' at x,y = ' + '{:.3f}'.format(self.x_center) + ', ' + '{:.3f}'.format(self.y_center) + '.'
 
@@ -221,13 +328,6 @@ def make_pill_mask(mask_shape, xa, ya, xb, yb, radius):
     circle_b_mask = np.fromfunction(lambda i, j: ((i - yb) ** 2 + (j - xb) ** 2) > (radius ** 2),
                                     shape=mask_shape)
 
-    # Nested function:
-    def distance_to_line(x0, y0, x1, y1, x2, y2, dist12=None):
-        if dist12 is None:
-            dist12 = sqrt((y2 - y1)**2 + (x2 - x1)**2)
-        distance = abs((y2 - y1) * x0 - (x2 - x1) * y0 + x2 * y1 - y2 * x1) / dist12
-        return distance
-
     # Mask outside max distance from (xa,ya)-(xb,yb) line segment:
     rectangle_submask_1 = np.fromfunction(lambda i, j:
                                           distance_to_line(j, i, xa, ya, xb, yb, distance_motion) > radius,
@@ -254,6 +354,15 @@ def make_pill_mask(mask_shape, xa, ya, xb, yb, radius):
     circles_mask = np.logical_and(circle_a_mask, circle_b_mask)  # union of False.
     mask = np.logical_and(circles_mask, rectangle_mask)          # "
     return mask
+
+
+def distance_to_line(xpt, ypt, xa, ya, xb, yb, dist_ab=None):
+    """ Yield the closest (perpendicular) distance from point (xpt, ypt) to the line (not necessarily
+        within the closed line segment) passing through (x1,y1) and (x2,y2). """
+    if dist_ab is None:
+        dist_ab = sqrt((yb - ya)**2 + (xb - xa)**2)
+    distance = abs((yb - ya) * xpt - (xb - xa) * ypt + xb * ya - yb * xa) / dist_ab
+    return distance
 
 
 PROBABLY_NOT_USED_____________________________________ = 0

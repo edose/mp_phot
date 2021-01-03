@@ -7,21 +7,22 @@ import pytest
 # External packages:
 import numpy as np
 from astropy.nddata import CCDData
+import astropy.io.fits as apyfits
 
 # From this package:
 from mp_phot import util
-from mp_phot import do_workflow
+from mp_phot import workflow_session
 
 MP_PHOT_ROOT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TEST_SESSION_DIRECTORY = os.path.join(MP_PHOT_ROOT_DIRECTORY, 'test', '$sessions_for_test')
+TEST_SESSIONS_DIRECTORY = os.path.join(MP_PHOT_ROOT_DIRECTORY, 'test', '$sessions_for_test')
 TEST_MP = '191'
 TEST_AN = '20200617'
-MP_AN_DIRECTORY = os.path.join(TEST_SESSION_DIRECTORY, 'MP_' + TEST_MP, 'AN' + TEST_AN)
+MP_AN_DIRECTORY = os.path.join(TEST_SESSIONS_DIRECTORY, 'MP_' + TEST_MP, 'AN' + TEST_AN)
 DEFAULTS_FULLPATH = os.path.join(MP_PHOT_ROOT_DIRECTORY, 'data', 'defaults.txt')
 
 
 def test_get_mp_filenames():
-    this_directory = os.path.join(TEST_SESSION_DIRECTORY, 'MP_' + TEST_MP, 'AN' + TEST_AN)
+    this_directory = os.path.join(TEST_SESSIONS_DIRECTORY, 'MP_' + TEST_MP, 'AN' + TEST_AN)
     mp_filenames = util.get_mp_filenames(this_directory)
     assert isinstance(mp_filenames, list)
     assert all([isinstance(fn, str) for fn in mp_filenames])
@@ -31,16 +32,72 @@ def test_get_mp_filenames():
     assert len(set(mp_filenames)) == len(mp_filenames)  # filenames are unique.
 
 
-def test_dict_from_directives_file():
-    d = util.dict_from_directives_file(DEFAULTS_FULLPATH)
-    assert isinstance(d, dict)
-    all_keys = set(d.keys())
-    required_keys = set(do_workflow.REQUIRED_DEFAULT_DIRECTIVES)
-    assert len(required_keys - all_keys) == 0  # all required must be present.
-    assert d['INSTRUMENT'] == 'Borea'
-    assert d['MAX_CATALOG_R_MAG'] == '16'
-    assert d['FIT_JD'] == 'Yes'
-    assert 'INVALID_KEY' not in all_keys  # absent key returns None.
+def test_process_mp_and_an():
+    # TODO: move target to util.py, test it there.
+    mp_id, an_string = util.process_mp_and_an(1108, 20200617)  # case: integers.
+    assert mp_id == '#1108'
+    assert an_string == '20200617'
+    mp_id, an_string = util.process_mp_and_an('1108', '20200617')  # case: strs (MP numbered).
+    assert mp_id == '#1108'
+    assert an_string == '20200617'
+    mp_id, an_string = util.process_mp_and_an('1997 TX3', '20200617')  # case: strs (MP unnumbered).
+    assert mp_id == '*1997 TX3'
+    assert an_string == '20200617'
+
+
+def test_fits_header_value():
+    # TODO: move target to util.py, test it there.
+    fullpath = os.path.join(TEST_SESSIONS_DIRECTORY, 'MP_191', 'AN20200617', 'MP_191-0001-Clear.fts')
+    hdu = apyfits.open(fullpath)[0]
+    assert util.fits_header_value(hdu, 'FILTER') == 'Clear'
+    assert util.fits_header_value(hdu, 'NAXIS1') == 3072
+    assert util.fits_header_value(hdu, 'INVALID') is None
+
+
+def test_fits_is_plate_solved():
+    # TODO: move target to util.py, test it there.
+    fullpath = os.path.join(TEST_SESSIONS_DIRECTORY, 'MP_191', 'AN20200617', 'MP_191-0001-Clear.fts')
+    hdu = apyfits.open(fullpath)[0]
+    assert util.fits_is_plate_solved(hdu) is True
+    hdu.header['CRVAL1'] = 'INVALID'
+    assert util.fits_is_plate_solved(hdu) is False
+    hdu = apyfits.open(fullpath)[0]
+    del hdu.header['CD2_1']
+    assert util.fits_is_plate_solved(hdu) is False
+
+
+def test_fits_is_calibrated():
+    # TODO: move target to util.py, test it there.
+    fullpath = os.path.join(TEST_SESSIONS_DIRECTORY, 'MP_191', 'AN20200617', 'MP_191-0001-Clear.fts')
+    hdu = apyfits.open(fullpath)[0]
+    assert util.fits_is_calibrated(hdu) is True
+    hdu.header['CALSTAT'] = 'INVALID'
+    assert util.fits_is_calibrated(hdu) is False
+    del hdu.header['CALSTAT']
+    assert util.fits_is_calibrated(hdu) is False
+
+
+def test_fits_focal_length():
+    # TODO: move target to util.py, test it there.
+    fullpath = os.path.join(TEST_SESSIONS_DIRECTORY, 'MP_191', 'AN20200617', 'MP_191-0001-Clear.fts')
+    hdu = apyfits.open(fullpath)[0]
+    focallen_value = util.fits_focal_length(hdu)
+    assert focallen_value == 2713.5
+    del hdu.header['FOCALLEN']
+    fl_value = util.fits_focal_length(hdu)
+    assert 0.97 * focallen_value <= fl_value <= 1.03 * focallen_value
+
+
+# def test_dict_from_directives_file():
+#     d = util.dict_from_directives_file(DEFAULTS_FULLPATH)
+#     assert isinstance(d, dict)
+#     all_keys = set(d.keys())
+#     required_keys = set(workflow_session.REQUIRED_DEFAULT_DIRECTIVES)
+#     assert len(required_keys - all_keys) == 0  # all required must be present.
+#     assert d['INSTRUMENT'] == 'Borea'
+#     assert d['MAX_CATALOG_R_MAG'] == '16'
+#     assert d['FIT_JD'] == 'Yes'
+#     assert 'INVALID_KEY' not in all_keys  # absent key returns None.
 
 
 def test_calc_background_adus():

@@ -13,6 +13,9 @@ import astropy.io.fits as apyfits
 from astropy.nddata import CCDData
 from astropy.wcs import WCS
 
+#EVD packages:
+
+
 
 # From this package:
 from .util import dict_from_directives_file, get_mp_filenames
@@ -147,7 +150,7 @@ def resume(mp_top_directory=MP_TOP_DIRECTORY, mp_id=None, an=None, filter_string
 
 
 def assess():
-    # Adapt from package mpc, mp_phot.asses().
+    # Adapt from package mpc, mp_phot.assess().
     """  First, verify that all required files are in the working directory or otherwise accessible.
          Then, perform checks on FITS files in this directory before performing the photometry proper.
          Modeled after and extended from assess() found in variable-star photometry package 'photrix'.

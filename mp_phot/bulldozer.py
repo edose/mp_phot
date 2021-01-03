@@ -34,23 +34,16 @@ MAX_MISALIGNMENT_FOR_CONVERGENCE = 5.0  # in millipixels
 FWHM_PER_SIGMA = 2.0 * sqrt(2.0 * log(2))  # ca. 2.35482
 
 
-def measure_mp():
-    pass
-
-
-def measure_comps():
-    pass
-
-
 CLASS_DEFINITIONS__________________________________________ = 0
 
 
 class MP_Image:
-    """ An astropy CCDData object, embellished with image-associated data we will need."""
+    """ An astropy CCDData object, plus per-image metadata."""
     def __init__(self, directory, filename, settings):
         """
         :param directory: path to directory holding FITS files. [string]
         :param filename: FITS filename. [string]
+        :param settings:
         """
         self.fullpath = os.path.join(directory, filename)
         self.filename = filename

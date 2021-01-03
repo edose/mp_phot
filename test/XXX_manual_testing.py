@@ -10,8 +10,8 @@ from astropy.nddata import CCDData
 from astropy.modeling.models import Gaussian2D
 import matplotlib.pyplot as plt
 
-from mp_phot.measure import MP_ImageList, plot_arrays
-from mp_phot.do_workflow import Settings
+from mp_phot.bulldozer import MP_ImageList, plot_arrays
+from mp_phot.workflow_session import Settings
 
 from mp_phot.util import get_mp_filenames
 
