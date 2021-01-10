@@ -31,39 +31,50 @@ def get_mp_filenames(directory):
     mp_filenames.sort()
     return mp_filenames
 
-def process_mp_and_an(mp_id, an):
+
+def get_mp_and_an_strings(mp_id, an):
     """ Return MP id and Astronight id in usable (internal) forms.
-    :param mp_id: raw MP identification, either number or unnumbered ID. [int or string]
-    :param an: Astronight ID yyyymmdd. [int or string]
+    :param mp_id: raw MP identification, either number or other ID, e.g., 5802 (int), '5802', or
+             '1992 SG4'. [int or string]
+    :param an: Astronight ID yyyymmdd. [int, or string representing an int]
     :return: 2-tuple (mp_id, an_string) [tuple of 2 strings]:
-             mp_id has '#' prepended for numbered MP, '*' prepended for ID of unnumbered MP.
-             an_string is always an 8 character string 'yyyymmdd' representing Astronight.
+             mp_string: for numbered MP, give simply the string, e.g. '5802'.
+                    for other MP ID, give the string prepended wtih '~', e.g., '~1992 SG4'.
+             an_string is always an 8 character string 'yyyymmdd' representing a proper Astronight ID.
     """
+    mp_string = ''  # error default to be falsified by proper processing.
     # Handle mp_id:
     if isinstance(mp_id, int):
-        mp_id = ('#' + str(mp_id))  # mp_id like '#1108' for numbered MP 1108 (if passed in as int).
-    else:
-        if isinstance(mp_id, str):
-            try:
-                _ = int(mp_id)  # a test only
-            except ValueError:
-                mp_id = '*' + mp_id   # mp_id like '*1997 TX3' for unnumbered MP ID.
-            else:
-                mp_id = '#' + mp_id  # mp_id like '#1108' for numbered MP 1108 (if passed in as string).
+        mp_string = str(mp_id)  # e.g., '1108' for numbered MP ID 1108 (if passed in as int).
+    elif isinstance(mp_id, str):
+        try:
+            _ = int(mp_id)  # a test only
+        except ValueError:
+            mp_string = '~' + mp_id   # e.g., '*1997 TX3' for unnumbered MP ID '1997 TX3'.
         else:
-            print(' >>>>> ERROR: mp_id must be an int or string')
-            return None
-    print('MP ID =', mp_id + '.')
+            mp_string = mp_id.strip()  # e.g., '1108' for numbered MP ID 1108 (if passed in as string).
+    if mp_string == '':
+        print(' >>>>> ERROR: cannot make proper MP string from MP id', str(mp_id))
+        return None
+    # print('MP ID =', mp_string + '.')
 
     # Handle an:
-    an_string = str(an).strip()
-    try:
-        _ = int(an_string)  # test only
-    except ValueError:
-        print(' >>>>> ERROR: an must be an int, or a string representing an integer.')
+    if (not isinstance(an, str)) and (not isinstance(an, int)):
+        an_string = ''
+    else:
+        an_string = str(an).strip()
+        try:
+            _ = int(an_string)  # a test only
+        except ValueError:
+            an_string = ''
+        else:
+            if int(an_string) < 20000000  or int(an_string) > 21000000:
+                an_string = ''
+    if an_string == '':
+        print(' >>>>> ERROR: cannot make proper AN string from AN id', str(an))
         return None
-    print('AN =', an_string)
-    return mp_id, an_string
+    # print('AN =', an_string)
+    return mp_string, an_string
 
 
 def fits_header_value(hdu, key):
@@ -365,7 +376,28 @@ def distance_to_line(xpt, ypt, xa, ya, xb, yb, dist_ab=None):
     return distance
 
 
-PROBABLY_NOT_USED_____________________________________ = 0
+_____DATA_STRUCTURE_UTILITIES______________________ = 0
+
+
+def reorder_df_columns(df, left_column_list=None, right_column_list=None):
+    """ Reorder the columns in a pandas dataframe by (optionally) specifying columns names to go to the
+        left side (first columns) and to the right side (last columns) of the new dataframe.
+        Copied 2021-01-10 from mpc.mp_phot.reorder_df_columns().
+    :param df: dataframe whose columns are to be reordered. [pandas dataframe]
+    :param left_column_list: columns to be placed, in this order, at left of dataframe. [list of stings]
+    :param right_column_list: columns to be placed, in this order, at right of dataframe. [list of stings]
+    :return: dataframe with reordered columns. [pandas dataframe]
+    """
+    left_column_list = [] if left_column_list is None else left_column_list
+    right_column_list = [] if right_column_list is None else right_column_list
+    new_column_order = left_column_list +\
+                       [col_name for col_name in df.columns
+                        if col_name not in (left_column_list + right_column_list)] + right_column_list
+    df = df[new_column_order]
+    return df
+
+
+_____PROBABLY_NOT_USED_____________________________________ = 0
 
 
 def shift_2d_array(arr, dx, dy, fill_value=np.nan):

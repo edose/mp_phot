@@ -109,7 +109,7 @@ def do_raw_aperture_photometry(imlist):
 #         mp_location_late = (mp_file_late, mp['xy1_late'][0], mp['xy1_late'][1])
 #         mp_locations = [mp_location_early, mp_location_late]
 #         imlist = MP_ImageList.from_fits(READ_TEST_FITS_DIR, '191', '20200617', 'Clear',
-#                                         ref_star_locations=[],  # ref_star not needed here.
+#                                         ref_star_xy=[],  # ref_star not needed here.
 #                                         mp_locations=mp_locations, settings=Settings())
 #         if i == 0:
 #             # arrays will accumulate new MP signals; using a dict to ensure sync on writing.

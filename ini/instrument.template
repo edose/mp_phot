@@ -15,6 +15,8 @@ Aperture = float  -> aperture
 Model          = string -> camera model
 X Pixels       = int    -> x pixels
 Y Pixels       = int    -> y pixels
+# Gain is in electrons/ADU.
+CCD Gain       = float  -> ccd gain
 Saturation ADU = int    -> saturation adu
 Max Vignetting Pct At Corner = float -> max vignetting pct at corner
 

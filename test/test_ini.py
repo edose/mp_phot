@@ -1,29 +1,33 @@
 __author__ = "Eric Dose :: New Mexico Mira Project, Albuquerque"
 
+# Python native packages:
 import os
 
+# External packages:
 import pytest
 
-import mpc.ini
+# From this package:
+import mp_phot.ini as ini
 
-MPC_ROOT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-INI_FILE_SUBDIRECTORY = 'ini'
-BOOT_INI_FILENAME = 'defaults.ini'
+# MPC_ROOT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# INI_FILE_SUBDIRECTORY = 'ini'
+# BOOT_INI_FILENAME = 'defaults.ini'
 
 THIS_PACKAGE_ROOT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEST_TOP_DIRECTORY = os.path.join(THIS_PACKAGE_ROOT_DIRECTORY, "test", '$test_data_ini')
 
 
 def test_make_defaults_dict():
-    dd = mpc.ini.make_defaults_dict(root_dir=TEST_TOP_DIRECTORY, ini_subdir='', filename='defaults.ini')
+    dd = ini.make_defaults_dict(root_dir=TEST_TOP_DIRECTORY, ini_subdir='', filename='defaults.ini')
     assert dd['instrument ini'] == 'BoreaC14.ini'
+    assert dd['session log filename'] == 'session.log'
     assert dd['color control filename'] == 'color_control.ini'
     assert dd.get('not an element') is None
 
 
 def test_make_instrument_dict():
     mock_defaults_dict = {'instrument ini': '$test_only.ini'}
-    id = mpc.ini.make_instrument_dict(mock_defaults_dict)
+    id = ini.make_instrument_dict(mock_defaults_dict)
     assert id['min mp altitude'] == 29.5
     assert id['min moon distance'] == 45
     assert id['min hours mp observable'] == 25
@@ -48,6 +52,7 @@ def test_make_instrument_dict():
     assert id['default color index'] == ('SR', 'SI')
     assert id['min fwhm pixels'] == 1.5
     assert id['max fwhm pixels'] == 14
+    assert id['nominal fwhm pixels'] == 5
     assert id['exposure overhead'] == 20
     assert id['max exposure no guiding'] == 119
     assert id.get('not an element') is None
@@ -55,7 +60,7 @@ def test_make_instrument_dict():
 
 def test_make_observer_dict():
     mock_defaults_dict = {'observer ini': '$test_observer.ini'}
-    od = mpc.ini.make_observer_dict(mock_defaults_dict)
+    od = ini.make_observer_dict(mock_defaults_dict)
     assert od['name'] == 'Eric Dose'
     assert od['alcdef contact name'] == 'Eric V. Dose'
     assert od['alcdef contact info'] == 'mp@ericdose.com'
@@ -67,7 +72,7 @@ def test_make_observer_dict():
 
 def test_make_site_dict():
     mock_defaults_dict = {'site ini': '$test_site.ini'}
-    sd = mpc.ini.make_site_dict(mock_defaults_dict)
+    sd = ini.make_site_dict(mock_defaults_dict)
     assert sd['name'] == 'Deep Sky West, Beta building'
     assert sd['mpc code'] == 'V28'
     assert sd['longitude'] == pytest.approx(254.34647)

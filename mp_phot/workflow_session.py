@@ -4,7 +4,8 @@ __author__ = "Eric Dose :: New Mexico Mira Project, Albuquerque"
 import os
 from datetime import datetime, timezone
 from collections import Counter
-from math import sqrt, cos, sin, pi
+from math import sqrt, cos, sin, pi, floor
+import configparser
 
 # External packages:
 import numpy as np
@@ -13,83 +14,29 @@ import astropy.io.fits as apyfits
 from astropy.nddata import CCDData
 from astropy.wcs import WCS
 
-#EVD packages:
-
-
+# EVD packages:
+from astropak.ini import IniFile
+from astropak.image import FITS, Image
+from astropak.util import jd_from_datetime_utc
 
 # From this package:
-from .util import dict_from_directives_file, get_mp_filenames
-from .measure import MP_ImageList
+from .bulldozer import MP_ImageList
+import mp_phot.ini as ini
+import mp_phot.util as util
 
-# TODO: move most of these path and other constants to defaults.txt (or possibly to instrument file):
-DEFAULTS_FILE_FULLPATH = 'C:/Dev/mp_phot/data/defaults.txt'   # TODO: make this relative to package path.
-INSTRUMENT_FILE_DIRECTORY = 'C:/Dev/mp_phot/data/instrument'  # TODO: make this relative to package path.
-MP_TOP_DIRECTORY = 'C:/Astro/MP Photometry/'
-LOG_FILENAME = 'mp_phot.log'
-CONTROL_FILENAME = 'control.txt'
-DF_OBS_ALL_FILENAME = 'df_obs_all.csv'
-DF_IMAGES_ALL_FILENAME = 'df_images_all.csv'
-DF_COMPS_ALL_FILENAME = 'df_comps_all.csv'
-
-
+THIS_PACKAGE_ROOT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CONTROL_TEMPLATE_DIRECTORY = os.path.join(THIS_PACKAGE_ROOT_DIRECTORY, 'ini')
 
 RADIANS_PER_DEGREE = pi / 180.0
 PIXEL_FACTOR_HISTORY_TEXT = 'Pixel scale factor applied by apply_pixel_scale_factor().'
-
-# PLATESOLUTION_KEYS_TO_REMOVE = ['CTYPE1', 'CTYPE2', 'CRPIX1', 'CRPIX2', 'CRVAL1', 'CRVAL2',
-#                                 'ZMAG', 'EPOCH', 'PA', 'CDELT1', 'CDELT2', 'CROTA1', 'CROTA2',
-#                                 'CD1_1', 'CD1_2', 'CD2_1', 'CD2_2', 'TR1_*', 'TR2_*', 'PLTSOLVD']
-REQUIRED_DEFAULT_DIRECTIVES = ['INSTRUMENT', 'MP_RI_COLOR', 'MIN_CATALOG_R_MAG', 'MAX_CATALOG_R_MAG',
-                               'MAX_CATALOG_DR_MMAG', 'MIN_CATALOG_RI_COLOR', 'MAX_CATALOG_RI_COLOR',
-                               'FIT_TRANSFORM', 'FIT_EXTINCTION', 'FIT_VIGNETTE',
-                               'FIT_XY', 'FIT_JD']
-REQUIRED_INSTRUMENT_DIRECTIVES = ['PIXEL_SHIFT_TOLERANCE', 'FWHM_NOMINAL', 'CCD_GAIN', 'ADU_SATURATION',
-                                  'TRANSFORM']
-REQUIRED_CONTROL_DIRECTIVES = ['REF_STAR_LOCATION', 'MP_LOCATION', 'MP_RI_COLOR',
-                               'MIN_CATALOG_R_MAG', 'MAX_CATALOG_R_MAG',
-                               'MAX_CATALOG_DR_MMAG', 'MIN_CATALOG_RI_COLOR', 'MAX_CATALOG_RI_COLOR',
-                               'FIT_TRANSFORM', 'FIT_EXTINCTION', 'FIT_VIGNETTE', 'FIT_XY', 'FIT_JD']
 FOCUS_LENGTH_MAX_PCT_DEVIATION = 5.0
 
 
-# def remove_platesolution(mp_directory_path=None):
-#     """ From FITS file, remove all header entries (except HISTORY lines) that support plate solution
-#         previously written into the file. This is in preparation for re-solving the file with different
-#         software: whole-image WCS plate solutions for now...one hopes for SIP-enabled plate solutions
-#         in the future.
-#         In any case, this unsolve-resolve work is made necessary by one bit of software that won't
-#         play nicely with *any* other software.
-#     :param mp_directory_path: path of the directory holding the MP FITS files to process.
-#     :return: [None]. FITS files are updated in place.
-#     """
-#     mp_filenames = get_mp_filenames(mp_directory_path)
-#     for fn in mp_filenames:
-#         fullpath = os.path.join(mp_directory_path, fn)  # open to read only.
-#         with apyfits.open(fullpath, mode='update') as hdulist:
-#             hdu = hdulist[0]
-#             header_keys = list(hdu.header.keys())
-#             for key in PLATESOLUTION_KEYS_TO_REMOVE:
-#                 if key.endswith('*'):
-#                     for hk in header_keys:
-#                         if hk.startswith(key[:-1]):
-#                             try:
-#                                 _ = int(hk[len(key[:-1]):])  # a test only.
-#                             except ValueError:
-#                                 pass  # if key doesn't end in an integer, do nothing.
-#                             else:
-#                                 del hdu.header[hk]  # if key does end in integer.
-#                 if key in header_keys:
-#                     del hdu.header[key]
-#             hdu.header['HISTORY'] = 'Plate solution removed by remove_platesolution().'
-#             hdulist.flush()  # finish writing to same file in same location.
-#     print('OK: remove_platesolution() has processed', len(mp_filenames), 'MP FITS files.')
-
-
-def start(mp_top_directory=MP_TOP_DIRECTORY, mp_id=None, an=None, filter=None):
+def start(session_top_directory=None, mp_id=None, an=None, filter=None):
     # Adapted from package mpc, mp_phot.start().
     """ Launch one session of MP photometry workflow.
-    :param mp_top_directory: path of lowest directory common to all MP photometry FITS, e.g.,
-               'C:/Astro/MP Photometry'. [string]
+    :param session_top_directory: path of lowest directory common to all MP lightcurve FITS, e.g.,
+               'C:/Astro/MP Photometry'. None will use .ini file default (normal case). [string]
     :param mp_id: either a MP number, e.g., 1602 for Indiana [integer or string], or for an id string
                for unnumbered MPs only, e.g., ''. [string only]
     :param an: Astronight string representation, e.g., '20191106'. [integer or string]
@@ -99,40 +46,49 @@ def start(mp_top_directory=MP_TOP_DIRECTORY, mp_id=None, an=None, filter=None):
     if mp_id is None or an is None:
         print(' >>>>> Usage: start(top_directory, mp_id, an)')
         return
-    mp_id, an_string = process_mp_and_an(mp_id, an)
+    mp_id, an_string = util.get_mp_and_an_strings(mp_id, an)
+
+    defaults_dict = ini.make_defaults_dict()
+    if session_top_directory is None:
+        session_top_directory = defaults_dict['session top directory']
 
     # Construct directory path and make it the working directory:
-    mp_directory = os.path.join(mp_top_directory, 'MP_' + mp_id[1:], 'AN' + an_string)
+    mp_directory = os.path.join(session_top_directory, 'MP_' + mp_id, 'AN' + an_string)
     os.chdir(mp_directory)
     print('Working directory set to:', mp_directory)
 
     # Initiate log file and finish:
-    log_file = open(LOG_FILENAME, mode='w')  # new file; wipe old one out if it exists.
-    log_file.write(mp_directory + '\n')
-    log_file.write('MP: ' + mp_id + '\n')
-    log_file.write('AN: ' + an_string + '\n')
-    log_file.write('FILTER:' + filter + '\n')
-    log_file.write('This log started: ' +
-                   '{:%Y-%m-%d  %H:%M:%S utc}'.format(datetime.now(timezone.utc)) + '\n')
-    log_file.close()
+    log_filename = defaults_dict['session log filename']
+    with open(log_filename, mode='w') as log_file:  # new file; delete any old one.
+        log_file.write('Session Log File.' + '\n')
+        log_file.write(mp_directory + '\n')
+        log_file.write('MP: ' + mp_id + '\n')
+        log_file.write('AN: ' + an_string + '\n')
+        log_file.write('FILTER:' + filter + '\n')
+        log_file.write('This log started: ' +
+                       '{:%Y-%m-%d  %H:%M:%S utc}'.format(datetime.now(timezone.utc)) + '\n')
     print('Log file started.')
     print('Next: assess()')
 
 
-def resume(mp_top_directory=MP_TOP_DIRECTORY, mp_id=None, an=None, filter_string=None):
+def resume(session_top_directory=None, mp_id=None, an=None, filter=None):
     # Adapted from package mpc, mp_phot.assess().
     """ Restart a workflow in its correct working directory,
         but keep the previous log file--DO NOT overwrite it.
-    Parameters are exactly as for start().
+    Parameters are exactly as for .start().
     :return: [None]
     """
     if mp_id is None or an is None:
         print(' >>>>> Usage: resume(top_directory, mp_id, an)')
         return
-    mp_id, an_string = process_mp_and_an(mp_id, an)
+    mp_id, an_string = util.get_mp_and_an_strings(mp_id, an)
+
+    defaults_dict = ini.make_defaults_dict()
+    if session_top_directory is None:
+        session_top_directory = defaults_dict['session top directory']
 
     # Construct directory path and make it the working directory:
-    this_directory = os.path.join(mp_top_directory, 'MP_' + mp_id[1:], 'AN' + an_string)
+    this_directory = os.path.join(session_top_directory, 'MP_' + mp_id, 'AN' + an_string)
     os.chdir(this_directory)
 
     # Verify that proper log file already exists in the working directory:
@@ -143,49 +99,60 @@ def resume(mp_top_directory=MP_TOP_DIRECTORY, mp_id=None, an=None, filter_string
     log_this_directory, log_mp_string, log_an_string, log_filter_string = this_context
     if log_mp_string.lower() == mp_id[1].lower() and \
             log_an_string.lower() == an_string.lower() and \
-            log_filter_string == filter_string:
+            log_filter_string == filter:
         print('READY TO GO in', this_directory)
     else:
         print(' >>>>> Can\'t resume in', this_directory)
 
 
-def assess():
-    # Adapt from package mpc, mp_phot.assess().
+def assess(return_results=False):
     """  First, verify that all required files are in the working directory or otherwise accessible.
          Then, perform checks on FITS files in this directory before performing the photometry proper.
-         Modeled after and extended from assess() found in variable-star photometry package 'photrix'.
-                                    May be zero for MP color index determination only. [int]
-    :return: [None]
+         Modeled after and extended from assess() found in variable-star photometry package 'photrix',
+             then adapted from package mpc, mp_phot.assess()
+    :return: [None], or dict of summary info and warnings. [py dict]
     """
-    print('assess() entered.')
+    # Setup, including initializing return_dict:
+    # (Can't use orient_this_function(), because control.ini may not exist yet.)
     context = get_context()
     if context is None:
         return
     this_directory, mp_string, an_string, filter_string = context
-    log_file = open(LOG_FILENAME, mode='a')  # set up append to log file.
-    log_file.write('\n===== access()  ' +
-                   '{:%Y-%m-%d  %H:%M:%S utc}'.format(datetime.now(timezone.utc)) + '\n')
+    defaults_dict = ini.make_defaults_dict()
+
+    return_dict = {
+        'file not read': [],         # list of filenames
+        'filter not read': [],       # "
+        'file count by filter': [],  # list of tuples (filter, file count)
+        'warning count': 0,          # total count of all warnings.
+        'not platesolved': [],       # list of filenames
+        'not calibrated': [],        # "
+        'unusual fwhm': [],          # list of tuples (filename, fwhm)
+        'unusual focal length': []}  # list of tuples (filename, focal length)
 
     # Count FITS files by filter, write totals
     #    (we've stopped classifying files by intention; now we include all valid FITS in dfs):
     filter_counter = Counter()
     valid_fits_filenames = []
-    all_fits_filenames = get_mp_filenames(this_directory)
+    all_fits_filenames = util.get_mp_filenames(this_directory)
     for filename in all_fits_filenames:
         fullpath = os.path.join(this_directory, filename)
         try:
             hdu = apyfits.open(fullpath)[0]
         except:
             print(' >>>>> WARNING: can\'t read file', fullpath, 'as FITS. Skipping file.')
+            return_dict['file not read'].append(filename)
         else:
-            fits_filter = fits_header_value(hdu, 'FILTER')
+            fits_filter = util.fits_header_value(hdu, 'FILTER')
             if fits_filter is None:
                 print(' >>>>> WARNING: filter in', fullpath, 'cannot be read. Skipping file.')
+                return_dict['filter not read'].append(filename)
             else:
                 valid_fits_filenames.append(filename)
                 filter_counter[fits_filter] += 1
     for filter in filter_counter.keys():
         print('   ' + str(filter_counter[filter]), 'in filter', filter + '.')
+        return_dict['file count by filter'].append((filter, filter_counter[filter]))
 
     # Start dataframe for main FITS integrity checks:
     fits_extensions = pd.Series([os.path.splitext(f)[-1].lower() for f in valid_fits_filenames])
@@ -201,17 +168,16 @@ def assess():
     for filename in df.index:
         fullpath = os.path.join(this_directory, filename)
         hdu = apyfits.open(fullpath)[0]  # already known to be valid, from above.
-        df.loc[filename, 'PlateSolved'] = fits_is_plate_solved(hdu)
+        df.loc[filename, 'PlateSolved'] = util.fits_is_plate_solved(hdu)
         # TODO: if is plate solved, add FITS header line 'plate solution verified' etc.
         # TODO: if is plate solved, calc and add any customary/PinPoint plate-sol lines back in.
-        df.loc[filename, 'Calibrated'] = fits_is_calibrated(hdu)
-        df.loc[filename, 'FWHM'] = fits_header_value(hdu, 'FWHM')
-        df.loc[filename, 'FocalLength'] = fits_focal_length(hdu)
-        jd_start = fits_header_value(hdu, 'JD')
-        exposure = fits_header_value(hdu, 'EXPOSURE')
+        df.loc[filename, 'Calibrated'] = util.fits_is_calibrated(hdu)
+        df.loc[filename, 'FWHM'] = util.fits_header_value(hdu, 'FWHM')
+        df.loc[filename, 'FocalLength'] = util.fits_focal_length(hdu)
+        jd_start = util.fits_header_value(hdu, 'JD')
+        exposure = util.fits_header_value(hdu, 'EXPOSURE')
         jd_mid = jd_start + (exposure / 2) / 24 / 3600
-        df.loc[filename, 'JD_mid'] = jd_mid  # needed only to write control.txt stub.
-    n_warnings = 0
+        df.loc[filename, 'JD_mid'] = jd_mid  # needed only to write control.ini stub.
 
     # Warn of FITS without plate solution:
     filenames_not_platesolved = df.loc[~ df['PlateSolved'], 'Filename']
@@ -219,10 +185,11 @@ def assess():
         print('NO PLATE SOLUTION:')
         for fn in filenames_not_platesolved:
             print('    ' + fn)
+            return_dict['not platesolved'].append(fn)
         print('\n')
     else:
         print('All platesolved.')
-    n_warnings += len(filenames_not_platesolved)
+    return_dict['warning count'] += len(filenames_not_platesolved)
 
     # Warn of FITS without calibration:
     filenames_not_calibrated = df.loc[~ df['Calibrated'], 'Filename']
@@ -230,16 +197,18 @@ def assess():
         print('\nNOT CALIBRATED:')
         for fn in filenames_not_calibrated:
             print('    ' + fn)
+            return_dict['not calibrated'].append(fn)
         print('\n')
     else:
         print('All calibrated.')
-    n_warnings += len(filenames_not_calibrated)
+    return_dict['warning count'] += len(filenames_not_calibrated)
 
     # Warn of FITS with very large or very small FWHM:
     odd_fwhm_list = []
-    settings = Settings()
-    min_fwhm = 0.5 * settings['FWHM_NOMINAL']
-    max_fwhm = 2.0 * settings['FWHM_NOMINAL']
+    instrument_dict = ini.make_instrument_dict(defaults_dict)
+    # settings = Settings()
+    min_fwhm = 0.5 * instrument_dict['nominal fwhm pixels']
+    max_fwhm = 2.0 * instrument_dict['nominal fwhm pixels']
     for fn in df['Filename']:
         fwhm = df.loc[fn, 'FWHM']
         if fwhm < min_fwhm or fwhm > max_fwhm:  # too small or large:
@@ -248,63 +217,120 @@ def assess():
         print('\nUnusual FWHM (in pixels):')
         for fn, fwhm in odd_fwhm_list:
             print('    ' + fn + ' has unusual FWHM of ' + '{0:.2f}'.format(fwhm) + ' pixels.')
+            return_dict['unusual fwhm'].append((fn, fwhm))
         print('\n')
     else:
         print('All FWHM values seem OK.')
-    n_warnings += len(odd_fwhm_list)
+    return_dict['warning count'] += len(odd_fwhm_list)
 
     # Warn of FITS with abnormal Focal Length:
     odd_fl_list = []
     median_fl = df['FocalLength'].median()
-    for f in df['Filename']:
-        fl = df.loc[f, 'FocalLength']
+    for fn in df['Filename']:
+        fl = df.loc[fn, 'FocalLength']
         focus_length_pct_deviation = 100.0 * abs((fl - median_fl)) / median_fl
         if focus_length_pct_deviation > FOCUS_LENGTH_MAX_PCT_DEVIATION:
-            odd_fl_list.append((f, fl))
+            odd_fl_list.append((fn, fl))
     if len(odd_fl_list) >= 1:
         print('\nUnusual FocalLength (vs median of ' + '{0:.1f}'.format(median_fl) + ' mm:')
-        for f, fl in odd_fl_list:
-            print('    ' + f + ' has unusual Focal length of ' + str(fl))
+        for fn, fl in odd_fl_list:
+            print('    ' + fn + ' has unusual Focal length of ' + str(fl))
+            return_dict['unusual focal length'].append((fn, fl))
         print('\n')
     else:
         print('All Focal Lengths seem OK.')
-    n_warnings += len(odd_fl_list)
+    return_dict['warning count'] += len(odd_fl_list)
 
     # Summarize and write instructions for user's next steps:
-    if n_warnings == 0:
-        print('\n >>>>> ALL ' + str(len(df)) + ' FITS FILES APPEAR OK.')
-        print('Next: (1) enter MP pixel positions in', CONTROL_FILENAME,
-              'AND SAVE it,\n      (2) measure_mp()')
-        log_file.write('assess(): ALL ' + str(len(df)) + ' FITS FILES APPEAR OK.' + '\n')
-    else:
-        print('\n >>>>> ' + str(n_warnings) + ' warnings (see listing above).')
-        print('        Correct these and rerun assess() until no warnings remain.')
-        log_file.write('assess(): ' + str(n_warnings) + ' warnings.' + '\n')
-    log_file.close()
+    control_filename = defaults_dict['session control filename']
+    session_log_filename = defaults_dict['session log filename']
+    session_log_fullpath = os.path.join(this_directory, session_log_filename)
+    with open(session_log_fullpath, mode='w') as log_file:
+        if return_dict['warning count'] == 0:
+            print('\n >>>>> ALL ' + str(len(df)) + ' FITS FILES APPEAR OK.')
+            print('Next: (1) enter MP pixel positions in', control_filename,
+                  'AND SAVE it,\n      (2) measure_mp()')
+            log_file.write('assess(): ALL ' + str(len(df)) + ' FITS FILES APPEAR OK.' + '\n')
+        else:
+            print('\n >>>>> ' + str(return_dict['warning count']) + ' warnings (see listing above).')
+            print('        Correct these and rerun assess() until no warnings remain.')
+            log_file.write('assess(): ' + str(return_dict['warning count']) + ' warnings.' + '\n')
 
-    write_control_txt_stub(this_directory, df)  # if it doesn't already exist.
+    df_temporal = df.loc[:, ['Filename', 'JD_mid']].sort_values(by=['JD_mid'])
+    filenames_temporal_order = df_temporal['Filename']
+    write_control_ini_stub(this_directory, filenames_temporal_order)  # if it doesn't already exist.
+    if return_results:
+        return return_dict
 
 
-def measure():
-    # This will (1) prepare data for and call measure_mp() and measure_comps() from measure.py, then
-    # (2) prepare the 3 key dataframes for the call to do_mp_phot().
-    """ Prototype for testing; must be adapted deeply before production use. """
-    MP_PHOT_ROOT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    TEST_SESSIONS_DIRECTORY = os.path.join(MP_PHOT_ROOT_DIRECTORY, 'test', '$sessions_for_test')
-    TEST_MP = '191'
-    TEST_AN = '20200617'
-    mp_directory = os.path.join(TEST_SESSIONS_DIRECTORY, 'MP_' + TEST_MP, 'AN' + TEST_AN)
-    from test.test_do_workflow import make_test_control_txt
-    make_test_control_txt()
-    control_data = Control()
-    ref_star_locations = [['MP_191-0001-Clear.fts',  790.6, 1115.0],
-                          ['MP_191-0028-Clear.fts', 1198.5, 1084.4]]  # 28: close but faint
-    mp_locations = control_data['MP_LOCATION']
-    settings = Settings()
+def make_df_images():
+    """ This dataframe probably needed for following fns, may as well get its construction out of the way.
+        Adapted 2021-01-10 from mpc.mp_phot.make_dfs().
+    :return df_images: one row per valid FITS image in current working directory. [pandas dataframe]
+    """
+    context, defaults_dict, control_dict, log_file = orient_this_function('make_df_images')
+    this_directory, mp_string, an_string, filter_string = context
 
+    # Get all relevant FITS filenames, make lists of FITS objects and Image objects:
+    all_fits_filenames = util.get_mp_filenames(this_directory)
+    fits_list = [FITS(this_directory, '', fits_name) for fits_name in all_fits_filenames]
+    valid_fits_list = [fits for fits in fits_list if fits.is_valid]
+    image_list = [Image(fits_object) for fits_object in valid_fits_list]  # Image objects
+    if len(image_list) <= 0:
+        print(' >>>>> ERROR: no FITS files found in', this_directory + ' --> exiting now.')
+        return None
+
+    # Gather image data into a list of dicts (to then make dataframe):
+    image_dict_list = []
+    for image in image_list:
+        image_dict = dict()
+        image_dict['FITSfile'] = image.fits.filename
+        image_dict['JD_start'] = jd_from_datetime_utc(image.fits.utc_start)
+        image_dict['UTC_start'] = image.fits.utc_start
+        image_dict['Exposure'] = image.fits.exposure
+        image_dict['UTC_mid'] = image.fits.utc_mid
+        image_dict['JD_mid'] = jd_from_datetime_utc(image.fits.utc_mid)
+        image_dict['Filter'] = image.fits.filter
+        image_dict['Airmass'] = image.fits.airmass
+        image_dict['JD_fract'] = np.nan  # placeholder (actual value requires that all JDs be known).
+        image_dict_list.append(image_dict)
+
+    # Make df_images (one row per FITS file):
+    df_images = pd.DataFrame(data=image_dict_list)
+    df_images.index = list(df_images['FITSfile'])  # list to prevent naming the index
+    jd_floor = floor(df_images['JD_mid'].min())  # requires that all JD_mid values be known.
+    df_images['JD_fract'] = df_images['JD_mid'] - jd_floor
+    df_images.sort_values(by='JD_mid')
+    df_images = util.reorder_df_columns(df_images, ['FITSfile', 'JD_mid', 'Filter', 'Exposure', 'Airmass'])
+    return df_images
+
+
+def calc_mp_fluxes():
+    """ By calling various fns from bulldozer.py: prepare MP fluxes (net) and make a dataframe with
+        these fluxes, their sigmas, and probably some related data (which?).
+        IN DEVELOPMENT 2021-01-04.
+    :return df_mp_fluxes
+    """
+    context, defaults_dict, control_dict, log_file = orient_this_function('calc_mp_fluxes')
+    this_directory, mp_string, an_string, filter_string = context
+
+    # Defunct, previous-version:
+    # MP_PHOT_ROOT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # TEST_SESSIONS_DIRECTORY = os.path.join(MP_PHOT_ROOT_DIRECTORY, 'test', '$sessions_for_test')
+    # TEST_MP = '191'
+    # TEST_AN = '20200617'
+    # mp_directory = os.path.join(TEST_SESSIONS_DIRECTORY, 'MP_' + TEST_MP, 'AN' + TEST_AN)
+    # from test.XXX_test_do_workflow import make_test_control_txt
+    # make_test_control_txt()
+    # # control_data = Control()
+    # ref_star_xy = [['MP_191-0001-Clear.fts',  790.6, 1115.0],
+    #                       ['MP_191-0028-Clear.fts', 1198.5, 1084.4]]  # 28: close but faint
+    # mp_locations = control_data['MP_LOCATION']
+    # # settings = Settings()
+
+    # TODO: Purge settings object, replace with control_dict.
     # MP (minor planet) stack of calls:
-    imlist = MP_ImageList.from_fits(mp_directory, TEST_MP, TEST_AN, 'Clear',
-                                    ref_star_locations, mp_locations, settings)
+    imlist = MP_ImageList.from_fits(this_directory, mp_string, an_string, 'Clear', control_dict)
     imlist.calc_ref_star_radecs()
     imlist.calc_mp_radecs()
     imlist.make_subimages()
@@ -326,441 +352,197 @@ def measure():
     pass
 
 
-def reduce():
-    # This will call do_mp_phot() in reduce.py.
+def calc_comp_star_fluxes():
+    """
+
+    :return:
+    """
+    pass
+
+def calc_magnitudes():
     pass
 
 
-CLASS_DEFINITIONS__________________________________________ = 0
-
-
-class Settings:
-    """ Holds (1) instrument info and (2) defaults for workflow in one dictionary 'data'. [dict]
-        Supplied by user in text file stored at DEFAULTS_FILE_FULLPATH.
-        Most items remain unchanged from night to night.
-        Expected items:
-            INSTRUMENT: name of instrument, e.g., 'Borea' [string]
-            MP_RI_COLOR: default MP color in Sloan r-i, e.g. +0.22 [float]
-            MIN_CATALOG_R_MAG: default minimum catalog comp-star mag in Sloan r [float]
-            MAX_CATALOG_R_MAG: default maximum catalog comp-star mag in Sloan r [float]
-            MAX_CATALOG_DR_MMAG: default maximum catalog comp-star mag uncertainty in Sloan r [float]
-            MIN_CATALOG_RI_COLOR: default minimum catalog comp-star color in Sloan r-i [float]
-            MAX_CATALOG_RI_COLOR: default maximum catalog comp-star color in Sloan r-i [float]
-            FIT_TRANSFORM: True to include transform in comp-star regression model [boolean]
-            FIT_EXTINCTION: True to include extinction in comp-star regression model [boolean]
-            FIT_VIGNETTE: True to include parabolic vignetting in comp-star regression model [boolean]
-            FIT_XY: True to include linear X- and Y-gradients in comp-star regression model [boolean]
-            FIT_JD: True to include linear time term (drift) in comp-star regression model [boolean]
-            PIXEL_SHIFT_TOLERANCE: maximum shift expected between images, in number of pixels [float]
-            FWHM_NOMINAL: nominal comp-star full-width at half-max, to get computations started [float]
-            CCD_GAIN: in electrons per ADU, e.g., 1.57 [float]
-            ADU_SATURATION: ADU/pixel above which signals is expected saturated, e.g., 54000 [float]
-            DEFAULT_FILTER: default MP filter, e.g., 'Clear' [string]
-            PINPOINT_PIXEL_SCALE_FACTOR: real vs Pinpoint center pixel scale, e.g., 0.997 [float]
-            TRANSFORM: list of default transform directives, [list of lists] e.g.,
-                [['Clear', 'SR', 'SR-SI', 'Use', '+0.36', '-0.54'], ['BB', 'SR', 'SR-SI', 'Fit=2']]
-    """
-    def __init__(self, instrument_name=None):
-        # Read and parse defaults.txt (only needed to construct control.txt stub):
-        defaults_dict = dict_from_directives_file(DEFAULTS_FILE_FULLPATH)
-        defaults_dict_directives = set(defaults_dict.keys())
-        required_directives = set(REQUIRED_DEFAULT_DIRECTIVES)
-        missing_directives = required_directives - defaults_dict_directives
-        if len(missing_directives) > 0:
-            for md in missing_directives:
-                print(' >>>>> ERROR: defaults file is missing directive', md + '.')
-            exit(0)
-        if instrument_name is not None:
-            defaults_dict['INSTRUMENT'] = instrument_name
-
-        # Read and parse instrument file (given in __init__() or in defaults.txt):
-        if instrument_name is None:
-            self.instrument_filename = defaults_dict['INSTRUMENT'].split('.txt')[0] + '.txt'  # 1 .txt.
-        else:
-            self.instrument_filename = instrument_name.split('.txt')[0] + '.txt'  # 1 .txt @ end.
-        fullpath = os.path.join(INSTRUMENT_FILE_DIRECTORY, self.instrument_filename)
-        instrument_dict = dict_from_directives_file(fullpath)
-        instrument_dict_directives = set(instrument_dict.keys())
-        required_directives = set(REQUIRED_INSTRUMENT_DIRECTIVES)
-        missing_directives = required_directives - instrument_dict_directives
-        if len(missing_directives) > 0:
-            for md in missing_directives:
-                print(' >>>>> ERROR: instrument file is missing directive', md + '.')
-            exit(0)
-
-        # Verify no keys overlap, then combine dicts:
-        directives_in_both_dicts = defaults_dict_directives.intersection(instrument_dict_directives)
-        if len(directives_in_both_dicts) > 0:
-            for db in directives_in_both_dicts:
-                print(' >>>>> WARNING: directive', db, 'appears in both directive and instrument files.')
-        self._data = {**defaults_dict, **instrument_dict}  # nb: instrument_dict overrides defaults_dict.
-
-        # Cast to floats those values that actually represent floats:
-        for key in ['MP_RI_COLOR', 'MIN_CATALOG_R_MAG', 'MAX_CATALOG_R_MAG',
-                    'MAX_CATALOG_DR_MMAG', 'MIN_CATALOG_RI_COLOR', 'MAX_CATALOG_RI_COLOR',
-                    'PIXEL_SHIFT_TOLERANCE', 'FWHM_NOMINAL', 'CCD_GAIN', 'ADU_SATURATION',
-                    'PINPOINT_PIXEL_SCALE_FACTOR']:
-            self._data[key] = float(self._data[key])
-
-        # Split long transform strings into value lists:
-        self._data['FIT_TRANSFORM'] = self._data['FIT_TRANSFORM'].split()
-        if not isinstance(self._data['TRANSFORM'], list):
-            self._data['TRANSFORM'] = [self._data['TRANSFORM']]
-        self._data['TRANSFORM'] = [tr.split() for tr in self._data['TRANSFORM']]
-
-    def __str__(self):
-        return 'Settings object from instrument file ' + self.instrument_filename
-
-    # Allow direct access as settings=Settings(); value = settings['somekey'].
-    def __getitem__(self, key):
-        return self._data.get(key, None)  # return None if key absent.
-
-    def get(self, key, default_value):
-        return self._data.get(key, default_value)
-
-
-class Control:
-    """ Holds data from control.txt file. Assumes current working directory is set by start().
-        Supplied by user in text file 'control.txt' within session directory.
-        Modified by user to control actual data reduction, including comp start selection
-            and the fit model, including terms to include, MP color, and transform type.
-        Expected items:
-        FIT_EXTINCTION: True if user includes extinction in comp-star regression model. [boolean]
-        FIT_JD: True if user includes linear time term (drift) in comp-star regression model. [boolean]
-        FIT_TRANSFORM: True if user includes transform in comp-star regression model. [boolean]
-        FIT_VIGNETTE: True if user includes parabolic vignetting in comp-star regression model. [boolean]
-        FIT_XY: True if user includes linear X- and Y-gradients in comp-star regression model. [boolean]
-        MAX_CATALOG_DR_MMAG: session's maximum catalog comp-star mag uncertainty in Sloan r [float]
-        MAX_CATALOG_R_MAG: session's maximum catalog comp-star mag in Sloan r [float]
-        MIN_CATALOG_R_MAG: session's maximum catalog comp-star mag in Sloan r [float]
-        MAX_CATALOG_RI_COLOR: session's default maximum catalog comp-star color in Sloan r-i [float]
-        MIN_CATALOG_RI_COLOR: session's default minimum catalog comp-star color in Sloan r-i [float]
-        MP_RI_COLOR: user's session MP color in Sloan r-i, e.g. +0.22 [float]
-        MP_LOCATION: 2-list of MP location specifications, from an early and a late image of the session,
-            e.g., [['MP_191-0001-Clear.fts', 826.4, 1077.4], ['MP_191-0028-Clear.fts', 1144.3, 1099.3]]
-        REF_STAR_LOCATION: list of at least 2 ref star location specifications, usually in the same image,
-            e.g., [['MP_191-0001-Clear.fts', 790.6, 1115.0],
-                   ['MP_191-0001-Clear.fts', 819.3, 1011.7],
-                   ['MP_191-0001-Clear.fts', 1060.4, 1066.0]]
-        IS_VALID: True if file 'control.txt' parsed without errors. [boolean]
-        ERRORS: Errors encountered while parsing file 'control.txt'; typically []. [list of strings]
-    """
-    def __init__(self):
-        context = get_context()
-        if context is None:
-            return
-        this_directory, mp_string, an_string, filter_string = context
-        self.fullpath = os.path.join(this_directory, CONTROL_FILENAME)
-        control_dict = dict_from_directives_file(self.fullpath)
-        control_directives = set(control_dict.keys())
-        required_directives = set(REQUIRED_CONTROL_DIRECTIVES)
-        missing_directives = required_directives - control_directives
-        control_dict['IS_VALID'] = True
-        control_dict['ERRORS'] = []
-        if len(missing_directives) > 0:
-            for md in missing_directives:
-                print(' >>>>> ERROR: control file is missing directive', md + '.')
-                control_dict['IS_VALID'] = False
-                control_dict['ERRORS'].append('Missing directive: ' + md)
-
-        # Verify at least 2 REF_STAR_LOCATION and exactly 2 MP_LOCATION entries:
-        rsl = control_dict['REF_STAR_LOCATION']
-        if not len(rsl) >= 2:
-            print(' >>>>> ERROR: only', str(len(rsl)), 'REF_STAR_LOCATION lines, but >= 2 required.')
-            control_dict['IS_VALID'] = False
-            control_dict['ERRORS'].append('REF_STAR_LOCATION count: ' + str(len(rsl)) + ' but >=2 required.')
-        mpl = control_dict['MP_LOCATION']
-        if not len(mpl) == 2:
-            print(' >>>>> ERROR:', str(len(mpl)), 'MP_LOCATION lines, but exactly 2 required.')
-            control_dict['IS_VALID'] = False
-            control_dict['ERRORS'].append('MP_LOCATION count: ' + str(len(mpl)) +
-                                          ' but exactly 2 required.')
-
-        # Cast values into proper types:
-        for key in ['MP_RI_COLOR', 'MIN_CATALOG_R_MAG', 'MAX_CATALOG_R_MAG',
-                    'MAX_CATALOG_DR_MMAG', 'MIN_CATALOG_RI_COLOR', 'MAX_CATALOG_RI_COLOR']:
-            try:
-                control_dict[key] = float(control_dict[key])
-            except ValueError:
-                print(' >>>>> ERROR: non-numeric value ' + str(control_dict[key]) +
-                      'for directive ' + key + '.')
-                control_dict['IS_VALID'] = False
-                control_dict['ERRORS'].append('non-numeric value ' + str(control_dict[key]) +
-                                              'for directive ' + key + '.')
-        for key in ['FIT_EXTINCTION', 'FIT_VIGNETTE', 'FIT_XY', 'FIT_JD']:
-            control_dict[key] = True if control_dict[key].upper()[0] == 'Y' else False
-        new_values = []
-        for raw_string in control_dict['REF_STAR_LOCATION']:
-            tokens = raw_string.strip().rsplit(maxsplit=2)
-            if len(tokens) != 3:
-                print(' >>>>> ERROR: bad syntax in REF_STAR_LOCATION entry ' + raw_string)
-                control_dict['IS_VALID'] = False
-                control_dict['ERRORS'].append('bad syntax in REF_STAR_LOCATION entry ' + raw_string)
-            try:
-                new_value = [tokens[0], float(tokens[1]), float(tokens[2])]
-            except ValueError:
-                print(' >>>>> ERROR: non-numeric in REF_STAR_LOCATION entry ' + raw_string)
-                control_dict['IS_VALID'] = False
-                control_dict['ERRORS'].append('non-numeric in REF_STAR_LOCATION entry ' + raw_string)
-                new_value = [tokens[0], None, None]
-            new_values.append(new_value)
-        control_dict['REF_STAR_LOCATION'] = new_values
-        new_values = []
-        for raw_string in control_dict['MP_LOCATION']:
-            tokens = raw_string.strip().rsplit(maxsplit=2)
-            if len(tokens) != 3:
-                print(' >>>>> ERROR: bad syntax in MP_LOCATION entry ' + raw_string)
-                control_dict['IS_VALID'] = False
-                control_dict['ERRORS'].append('bad syntax in MP_LOCATION entry ' + raw_string)
-            try:
-                new_value = [tokens[0], float(tokens[1]), float(tokens[2])]
-            except ValueError:
-                print(' >>>>> ERROR: non-numeric in MP_LOCATION entry ' + raw_string)
-                control_dict['IS_VALID'] = False
-                control_dict['ERRORS'].append('non-numeric in MP_LOCATION entry ' + raw_string)
-                new_value = [tokens[0], None, None]
-            new_values.append(new_value)
-        control_dict['MP_LOCATION'] = new_values
-        self._data = control_dict
-
-    def __str__(self):
-        return 'Control object from ' + self.fullpath
-
-    # Allow direct access as control=Control(); value = control['somekey'].
-    def __getitem__(self, key):
-        return self._data.get(key, None)  # return None if key absent.
+def make_lightcurves():
+    # This will call do_mp_phot() in reduce.py.
+    pass
 
 
 SUPPORT_FUNCTIONS________________________________________________ = 0
 
 
-def process_mp_and_an(mp_id, an):
-    """ Return MP id and Astronight id in usable (internal) forms.
-    :param mp_id: raw MP identification, either number or unnumbered ID. [int or string]
-    :param an: Astronight ID yyyymmdd. [int or string]
-    :return: 2-tuple (mp_id, an_string) [tuple of 2 strings]:
-             mp_id has '#' prepended for numbered MP, '*' prepended for ID of unnumbered MP.
-             an_string is always an 8 character string 'yyyymmdd' representing Astronight.
-    """
-    # Handle mp_id:
-    if isinstance(mp_id, int):
-        mp_id = ('#' + str(mp_id))  # mp_id like '#1108' for numbered MP 1108 (if passed in as int).
-    else:
-        if isinstance(mp_id, str):
-            try:
-                _ = int(mp_id)  # a test only
-            except ValueError:
-                mp_id = '*' + mp_id   # mp_id like '*1997 TX3' for unnumbered MP ID.
-            else:
-                mp_id = '#' + mp_id  # mp_id like '#1108' for numbered MP 1108 (if passed in as string).
-        else:
-            print(' >>>>> ERROR: mp_id must be an int or string')
-            return None
-    print('MP ID =', mp_id + '.')
-
-    # Handle an:
-    an_string = str(an).strip()
-    try:
-        _ = int(an_string)  # test only
-    except ValueError:
-        print(' >>>>> ERROR: an must be an int, or a string representing an integer.')
-        return None
-    print('AN =', an_string)
-    return mp_id, an_string
-
-
 def get_context():
     """ This is run at beginning of workflow functions (except start() or resume()) to orient the function.
+        TESTS OK 2021-01-08.
     :return: 4-tuple: (this_directory, mp_string, an_string, filter_string) [4 strings]
     """
     this_directory = os.getcwd()
-    if not os.path.isfile(LOG_FILENAME):
+    defaults_dict = ini.make_defaults_dict()
+    session_log_filename = defaults_dict['session log filename']
+    session_log_fullpath = os.path.join(this_directory, session_log_filename)
+    log_file = open(session_log_fullpath, mode='r')
+    if not os.path.isfile(session_log_fullpath):
         print(' >>>>> ERROR: no log file found ==> You probably need to run start() or resume().')
         return None
-    log_file = open(LOG_FILENAME, mode='r')  # for read only
-    lines = log_file.readlines()
-    log_file.close()
-    if len(lines) < 3:
+    with open(session_log_filename, mode='r') as log_file:
+        lines = log_file.readlines()
+    if len(lines) < 5:
         return None
-    if lines[0].strip().lower().replace('\\', '/').replace('//', '/') != \
+    if not lines[0].lower().startswith('session log file'):
+        return None
+    if lines[1].strip().lower().replace('\\', '/').replace('//', '/') != \
             this_directory.strip().lower().replace('\\', '/').replace('//', '/'):
         print('Working directory does not match directory at top of log file.')
         return None
-    mp_string = lines[1][3:].strip().upper()
-    an_string = lines[2][3:].strip()
-    filter_string = lines[3][7:].strip()
+    mp_string = lines[2][3:].strip().upper()
+    an_string = lines[3][3:].strip()
+    filter_string = lines[4][7:].strip()
     return this_directory, mp_string, an_string, filter_string
 
 
-def fits_header_value(hdu, key):
-    # Adapted from package photrix, class FITS.header_value.
+def orient_this_function(calling_function_name='[FUNCTION NAME NOT GIVEN]'):
+    """ Typically called at the top of workflow functions, to collect commonly required data.
+    :return: tuple of data elements: context [tuple], defaults_dict [py dict], log_file [file object].
     """
-    :param hdu: astropy fits header/data unit object.
-    :param key: FITS header key [string] or list of keys to try [list of strings]
-    :return: value of FITS header entry, typically [float] if possible, else [string]
+    context = get_context()
+    if context is None:
+        return
+    this_directory, mp_string, an_string, filter_string = context
+    defaults_dict = ini.make_defaults_dict()
+    control_dict = make_control_dict()
+    log_filename = defaults_dict['session log filename']
+    log_file = open(log_filename, mode='a')  # set up append to log file.
+    log_file.write('\n===== ' + calling_function_name + '()  ' +
+                   '{:%Y-%m-%d  %H:%M:%S utc}'.format(datetime.now(timezone.utc)) + '\n')
+    return context, defaults_dict, control_dict, log_file
+
+
+def write_control_ini_stub(this_directory, filenames_temporal_order):
+    """ Write the initial control file for this lightcurve session, later to be edited by user.
+    :param this_directory:
+    :param filenames_temporal_order:
+    :return:
     """
-    if isinstance(key, str):  # case of single key to try.
-        return hdu.header.get(key, None)
-    for k in key:             # case of list of keys to try.
-        value = hdu.header.get(k, None)
-        if value is not None:
-            return value
-    return None
+    # Do not overwrite existing control file:
+    defaults_dict = ini.make_defaults_dict()
+    control_ini_filename = defaults_dict['session control filename']
+    fullpath = os.path.join(this_directory, control_ini_filename)
+    if os.path.exists(fullpath):
+        return
 
+    filename_earliest = filenames_temporal_order[0]
+    filename_latest = filenames_temporal_order[-1]
+    header_lines = [
+        '# This is ' + fullpath + '.',
+        '']
 
-def fits_is_plate_solved(hdu):
-    # Adapted loosely from package photrix, class FITS. Returns boolean.
-    # TODO: tighten these tests, prob. by checking for reasonable numerical values.
-    plate_solution_keys = ['CD1_1', 'CD1_2', 'CD2_1', 'CD2_2', 'CRVAL1', 'CRVAL2', 'CRPIX1', 'CRPIX2']
-    values = [fits_header_value(hdu, key) for key in plate_solution_keys]
-    for v in values:
-        if v is None:
-            return False
-        if not isinstance(v, float):
-            try:
-                _ = float(v)
-            except ValueError:
-                return False
-            except TypeError:
-                return False
-    return True
-
-
-def fits_is_calibrated(hdu):
-    # Adapted from package photrix, class FITS. Requires calibration by Maxim 5 or 6, or by TheSkyX.
-    # Returns boolean.
-    # First, define all calibration functions as internal, nested functions:
-    def _is_calibrated_by_maxim_5_or_6(hdu):
-        calibration_value = fits_header_value(hdu, 'CALSTAT')
-        if calibration_value is not None:
-            if calibration_value.strip().upper() == 'BDF':
-                return True
-        return False
-    # If any is function signals valid, then fits is calibrated:
-    is_calibrated_list = [_is_calibrated_by_maxim_5_or_6(hdu)]  # expand later if more calibration fns.
-    return any([is_cal for is_cal in is_calibrated_list])
-
-
-def fits_focal_length(hdu):
-    # Adapted from package photrix, class FITS. Returns float if valid, else None.
-    fl = fits_header_value(hdu, 'FOCALLEN')
-    if fl is not None:
-        return fl  # in millimeters.
-    x_pixel_size = fits_header_value(hdu, 'XPIXSZ')
-    y_pixel_size = fits_header_value(hdu, 'YPIXSZ')
-    x_pixel_scale = fits_header_value(hdu, 'CDELT1')
-    y_pixel_scale = fits_header_value(hdu, 'CDELT2')
-    if any([value is None for value in [x_pixel_size, y_pixel_size, x_pixel_scale, y_pixel_scale]]):
-        return None
-    fl_x = x_pixel_size / abs(x_pixel_scale) * (206265.0 / (3600 * 1000))
-    fl_y = y_pixel_size / abs(y_pixel_scale) * (206265.0 / (3600 * 1000))
-    return (fl_x + fl_y) / 2.0
-
-
-def write_control_txt_stub(this_directory, df):
-    # Prepare data required to write control.txt stub:
-    defaults = Settings()
-    jd_min = df['JD_mid'].min()
-    df['SecondsRelative'] = [24 * 3600 * (jd - jd_min) for jd in df['JD_mid']]
-    i_earliest = df['SecondsRelative'].nsmallest(n=1).index[0]
-    i_latest = df['SecondsRelative'].nlargest(n=1).index[0]
-    earliest_filename = df.loc[i_earliest, 'Filename']
-    latest_filename = df.loc[i_latest, 'Filename']
-
-    def yes_no(true_false):
-        return 'Yes' if true_false else 'No'
-
-    # Write file stub:
-    lines = [';----- This is ' + CONTROL_FILENAME + ' for directory:\n;      ' + this_directory,
-             ';',
-             ';===== REF STAR LOCATIONS BLOCK ==========================================',
-             ';===== Enter at least 2 in the SAME image, before measure_mp() ===========',
-             ';      Reference Star x,y positions for image alignment:',
-             '#REF_STAR_LOCATION  ' + earliest_filename + '  [mp_x_pixel]  [mp_y_pixel]   ; ',
-             '#REF_STAR_LOCATION  ' + earliest_filename + '  [mp_x_pixel]  [mp_y_pixel]   ; ',
-             '#REF_STAR_LOCATION  ' + earliest_filename + '  [mp_x_pixel]  [mp_y_pixel]   ; ',
-             ';',
-             ';===== MP LOCATIONS BLOCK ================================================',
-             ';===== Enter exactly 2 in widely spaced images, before measure_mp() ======',
-             ';      MP x,y positions for flux measurement:',
-             '#MP_LOCATION  ' + earliest_filename + '  [mp_x_pixel]  [mp_y_pixel]   ; '
-             'early filename, change if needed',
-             '#MP_LOCATION  ' + latest_filename + '  [mp_x_pixel]  [mp_y_pixel]   ; '
-             ' late filename, change if needed',
-             ';',
-             ';===== MP RI COLOR BLOCK =================================================',
-             ';===== Enter before do_mp_phot(), get from do_color. =====================',
-             '#MP_RI_COLOR ' + '{0:+.3f}'.format(defaults['MP_RI_COLOR']) +
-             ' ;  get by running do_color(), or leave as default=' +
-             '{0:+.3f}'.format(defaults['MP_RI_COLOR']),
-             ';',
-             ';===== SELECTION CRITERIA BLOCK ==========================================',
-             ';===== Enter before do_mp_phot() =========================================',
-             ';      Selection criteria for comp stars, observations, images:',
-             ';#COMP  nnnn nn,   nnn        ; to omit comp(s) by comp ID',
-             ';#OBS nnn,nnnn nnnn   nn      ; to omit observation(s) by Serial number',
-             ';#IMAGE  MP_mmmm-00nn-Clear   ; to omit one FITS image (.fts at end optional)',
-             ('#MIN_CATALOG_R_MAG ' + str(defaults['MIN_CATALOG_R_MAG'])).ljust(30) +
-             '; default=' + str(defaults['MIN_CATALOG_R_MAG']),
-             ('#MAX_CATALOG_R_MAG ' + str(defaults['MAX_CATALOG_R_MAG'])).ljust(30) +
-             '; default=' + str(defaults['MAX_CATALOG_R_MAG']),
-             ('#MAX_CATALOG_DR_MMAG ' + str(defaults['MAX_CATALOG_DR_MMAG'])).ljust(30) +
-             '; default=' + str(defaults['MAX_CATALOG_DR_MMAG']),
-             ('#MIN_CATALOG_RI_COLOR ' + str(defaults['MIN_CATALOG_RI_COLOR'])).ljust(30) +
-             '; default=' + str(defaults['MIN_CATALOG_RI_COLOR']),
-             ('#MAX_CATALOG_RI_COLOR ' + str(defaults['MAX_CATALOG_RI_COLOR'])).ljust(30) +
-             '; default=' + str(defaults['MAX_CATALOG_RI_COLOR']),
-             ';',
-             ';===== REGRESSION OPTIONS BLOCK ==========================================',
-             ';===== Enter before do_mp_phot(): ========================================',
-             ';----- OPTIONS for regression model, rarely used:',
-
-             ';Choices for #FIT_TRANSFORM: Fit=1; '
-             + 'Fit=2; Use 0.2 0.4 [=tr1 & tr2 values]; Yes->Fit=1; No->Use 0 0',
-             '#FIT_TRANSFORM  Fit=2'.ljust(30) + '; default= Fit=2',
-             ('#FIT_EXTINCTION ' + yes_no(defaults['FIT_EXTINCTION'])).ljust(30) +
-             '; default='
-             + yes_no(defaults['FIT_EXTINCTION']) + ' // choose Yes or No  (case-insensitive)',
-             ('#FIT_VIGNETTE ' + yes_no(defaults['FIT_VIGNETTE'])).ljust(30) + '; default='
-             + yes_no(defaults['FIT_VIGNETTE']) + ' // choose Yes or No  (case-insensitive)',
-             ('#FIT_XY ' + yes_no(defaults['FIT_XY'])).ljust(30) + '; default='
-             + yes_no(defaults['FIT_XY']) + ' // choose Yes or No  (case-insensitive)',
-             ('#FIT_JD ' + yes_no(defaults['FIT_JD'])).ljust(30) + '; default='
-             + yes_no(defaults['FIT_JD']) + ' // choose Yes or No  (case-insensitive)',
-             ';'
-             ]
-    lines = [line + '\n' for line in lines]
-    fullpath = os.path.join(this_directory, CONTROL_FILENAME)
+    ini_lines = [
+        '[Ini Template]',
+        'Filename = control.template',
+        '']
+    bulldozer_lines = [
+        '[Bulldozer]',
+        '# At least 3 ref star XY, one per line, all from one FITS only if at all possible:',
+        'Ref Star XY = ' + filename_earliest + ' 000.0  000.0',
+        '              ' + filename_earliest + ' 000.0  000.0',
+        '              ' + filename_earliest + ' 000.0  000.0',
+        '# Exactly 2 MP XY, one per line (typically earliest and latest FITS):',
+        'MP XY = ' + filename_earliest + ' 000.0  000.0',
+        '        ' + filename_latest + ' 000.0  000.0',
+        '']
+    selection_criteria_lines = [
+        '[Selection Criteria]',
+        'Omit Comps =',
+        'Omit Obs =',
+        'Omit Images =',
+        'Min Catalog r mag = 10.0',
+        'Max Catalog r mag = 16.0',
+        'Max Catalog dr mmag = 15.0',
+        'Min Catalog ri color = 0.04',
+        'Max Catalog ri color = 0.40',
+        '']
+    regression_lines = [
+        '[Regression]',
+        'MP ri color = +0.220',
+        '# Fit Transform, one of: Fit=1, Fit=2, Use [val1], Use [val1] [val2]:',
+        'Fit Transform = Use +0.4 -0.6',
+        '# Fit Extinction, one of: Yes, Use [val]:',
+        'Fit Extinction = Use +0.16',
+        'Fit Vignette = Yes',
+        'Fit XY = No',
+        'Fit JD = Yes']
+    raw_lines = header_lines + ini_lines + bulldozer_lines + selection_criteria_lines + regression_lines
+    ready_lines = [line + '\n' for line in raw_lines]
     if not os.path.exists(fullpath):
         with open(fullpath, 'w') as f:
-            f.writelines(lines)
-    print('New ' + CONTROL_FILENAME + ' file written.\n')
+            f.writelines(ready_lines)
+    print('New ' + control_ini_filename + ' file written.\n')
 
 
-# def apply_pixel_scale_factor(fullpath):
-#     hdu0 = apyfits.open(fullpath)[0]
-#     h = hdu0.header
-#     print(str(h['CDELT1']), str(h['CDELT2']))
-#     cdelt1 = np.sign(h['CDELT1']) * (
-#             (abs(h['CDELT1']) + abs(h['CDELT2'])) / 2.0) * PINPOINT_PLATE_FACTOR
-#     cdelt2 = np.sign(h['CDELT2']) * (
-#             (abs(h['CDELT1']) + abs(h['CDELT2'])) / 2.0) * PINPOINT_PLATE_FACTOR
-#     cd11 = + cdelt1 * cos(h['CROTA2'] * RADIANS_PER_DEGREE)
-#     cd12 = - cdelt2 * sin(h['CROTA2'] * RADIANS_PER_DEGREE)
-#     cd21 = + cdelt1 * sin(h['CROTA2'] * RADIANS_PER_DEGREE)
-#     cd22 = + cdelt2 * cos(h['CROTA2'] * RADIANS_PER_DEGREE)
-#     h['CDELT1'] = cdelt1
-#     h['CDELT2'] = cdelt2
-#     h['CD1_1'] = cd11
-#     h['CD1_2'] = cd12
-#     h['CD2_1'] = cd21
-#     h['CD2_2'] = cd22
-#     print(str(h['CDELT1']), str(h['CDELT2']))
-#     radesysa = h.get('RADECSYS')  # replace obsolete key if present.
-#     if radesysa is not None:
-#         h['RADESYSa'] = radesysa
-#         del h['RADECSYS']
-#     h['HISTORY'] = PIXEL_FACTOR_HISTORY_TEXT
-#     this_wcs = WCS(header=h)
-#     ccddata_object = CCDData(data=hdu0.data, wcs=this_wcs, header=h, unit='adu')
-#     return ccddata_object
+def make_control_dict():
+    """ Read the control file for this lightcurve session, return control dict.
+    :return: control_dict [py dict].
+    """
+    this_context = get_context()
+    this_directory, mp_string, an_string, filter_string = this_context
+    defaults_dict = ini.make_defaults_dict()
+    control_ini_filename = defaults_dict['session control filename']
+    control_ini_directory = defaults_dict['session top directory']
+    fullpath = os.path.join(this_directory, control_ini_filename)
+    control_ini = IniFile(fullpath, template_directory_path=CONTROL_TEMPLATE_DIRECTORY)
+    control_dict = control_ini.value_dict  # raw values, a few to be reparsed just below:
+
+    # Bulldozer section:
+    # Parse and overwrite 'ref star xy':
+    ref_star_xy_list = []
+    ref_star_xy_lines = [line.strip() for line in control_dict['ref star xy']]
+    for line in ref_star_xy_lines:
+        items = line.replace(',', ' ').rsplit(maxsplit=2)  # for each line, items are: filename x y
+        if len(items) == 3:
+            filename = items[0]
+            x = ini.float_or_warn(items[1], filename + 'Ref Star X' + items[1])
+            y = ini.float_or_warn(items[2], filename + 'Ref Star Y' + items[2])
+            ref_star_xy_list.append((filename, x, y))
+        elif len(items >= 1):
+            print(' >>>>> ERROR: ' + items[1] + ' Ref Star XY invalid: ' + line)
+            return None
+    if len(ref_star_xy_list) < 2:
+        print(' >>>>> ERROR: control \'ref star xy\' has fewer than 2 entries, not allowed.')
+    control_dict['ref star xy'] = ref_star_xy_list
+
+    # Parse and overwrite 'mp xy':
+    mp_xy_dict = dict()
+    mp_xy_lines = [line.strip() for line in control_dict['mp xy']]
+    for line in mp_xy_lines:
+        items = line.replace(',', ' ').rsplit(maxsplit=2)  # for each line, items are: filename x y
+        if len(items) == 3:
+            filename = items[0]
+            x = ini.float_or_warn(items[1], filename + 'MP X' + items[1])
+            y = ini.float_or_warn(items[2], filename + 'MP X' + items[2])
+            mp_xy_dict[filename] = (x, y)
+        elif len(items != 2):
+            print(' >>>>> ERROR: ' + items[1] + ' MP XY invalid: ' + line)
+            return None
+    if len(mp_xy_dict) < 2:
+        print(' >>>>> ERROR: control \'ref star xy\' has ', str(len(mp_xy_dict)),
+              ' entries, must have exactly 2.')
+    control_dict['mp xy'] = mp_xy_dict
+
+    # Selection Criteria section, Omit elements:
+    control_dict['omit comps'] = ini.multiline_ini_value_to_items(' '.join(control_dict['omit comps']))
+    control_dict['omit obs'] = ini.multiline_ini_value_to_items(' '.join(control_dict['omit obs']))
+    control_dict['omit images'] = [s.strip() for s in control_dict['omit images']]
+    for comp in control_dict['omit comps']:
+        ini.warn_if_not_positive_int(comp, 'Comp: ' + comp)
+    for obs in control_dict['omit obs']:
+        ini.warn_if_not_positive_int(obs, 'Obs: ' + obs)
+
+    # Standardize remaining elements:
+    ini.warn_if_not_float(control_dict['mp ri color'], 'control.ini: MP ri Color is not a float.')
+    control_dict['fit transform'] = tuple([item.lower()
+                                           for item in control_dict['fit transform'].split()])
+    control_dict['fit extinction'] = tuple([item.lower()
+                                            for item in control_dict['fit extinction'].split()])
+    if len(control_dict['fit extinction']) == 1:
+        control_dict['fit extinction'] = control_dict['fit extinction'][0]
+    return control_dict

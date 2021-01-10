@@ -1,8 +1,15 @@
 __author__ = "Eric Dose :: New Mexico Mira Project, Albuquerque"
 
+""" ini.py (in mp_phot package).
+Copied and closely adapted from mpc package 2020-01-02.
+THIS is now the ONLY operational copy of ini.py (since mpc.ini.py was only for color photometry).
+"""
+
+# Python native packages:
 import os
 import configparser
 
+# EVD packages:
 import astropak.ini
 
 MPC_ROOT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -12,7 +19,7 @@ BOOT_INI_FILENAME = 'defaults.ini'
 
 def make_defaults_dict(root_dir=MPC_ROOT_DIRECTORY, ini_subdir=INI_FILE_SUBDIRECTORY,
                        filename=BOOT_INI_FILENAME):
-    """ Reads .ini file, returns defaults_dict.
+    """ Reads .ini file, returns defaults_dict. TEST OK 2021-01-02.
         See defaults.template for value types and key names.
         :param root_dir: root directory; the mpc source directory except when testing. [string]
         :param ini_subdir: the subdirectory under root where defaults ini file is found. [string]
@@ -26,7 +33,7 @@ def make_defaults_dict(root_dir=MPC_ROOT_DIRECTORY, ini_subdir=INI_FILE_SUBDIREC
 
 
 def make_instrument_dict(defaults_dict):
-    """ Reads .ini file, returns instrument_dict.
+    """ Reads .ini file, returns instrument_dict. TESTS OK 2021-01-02.
         See instrument.template for value types and key names.
     :return: instrument_dict. [python dict object, some items nested dicts]
     """
@@ -76,7 +83,7 @@ def make_instrument_dict(defaults_dict):
 
 
 def make_observer_dict(defaults_dict):
-    """ Reads .ini file, returns observer_dict.
+    """ Reads .ini file, returns observer_dict. TESTS OK 2021-01-02.
         Used mostly for ALCDEF file generation.
     :return: observer_dict. [python dict object, all keys and values are strings]
     See observer.template for value types and key names.
@@ -89,7 +96,7 @@ def make_observer_dict(defaults_dict):
 
 
 def make_site_dict(defaults_dict):
-    """ Reads .ini file, returns site_dict.
+    """ Reads .ini file, returns site_dict. TESTS OK 2021-01-02.
     :return: site_dict. [python dict object, some values are nested dicts.]
     See site.template for value types and key names.
     """

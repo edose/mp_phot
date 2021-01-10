@@ -25,7 +25,8 @@ import skimage.transform as skt
 import statsmodels.api as sma
 
 # From this package:
-from mp_phot import util
+import mp_phot.util as util
+import mp_phot.ini as ini
 
 PINPOINT_PLTSOLVD_TEXT = 'Plate has been solved by PinPoint'
 PIXEL_FACTOR_HISTORY_TEXT = 'Pixel scale factor applied by apply_pixel_scale_factor().'
@@ -38,12 +39,12 @@ CLASS_DEFINITIONS__________________________________________ = 0
 
 
 class MP_Image:
-    """ An astropy CCDData object, plus per-image metadata."""
-    def __init__(self, directory, filename, settings):
+    """ An astropy CCDData object, plus per-image metadata. """
+    def __init__(self, directory, filename, control_dict):
         """
         :param directory: path to directory holding FITS files. [string]
         :param filename: FITS filename. [string]
-        :param settings:
+        :param control_dict:
         """
         self.fullpath = os.path.join(directory, filename)
         self.filename = filename
@@ -65,7 +66,9 @@ class MP_Image:
             is_solved_by_pinpoint = False
         pixel_scale_factor_is_applied = any([val == PIXEL_FACTOR_HISTORY_TEXT for val in h['HISTORY']])
         if is_solved_by_pinpoint and not pixel_scale_factor_is_applied:
-            h = apply_pixel_scale_factor(h, settings.get('PINPOINT_PIXEL_SCALE_FACTOR', 1.00))
+            instrument_dict = ini.make_instrument_dict()
+            scale_factor = instrument_dict['pinpoint pixel scale multiplier']
+            h = apply_pixel_scale_factor(h, scale_factor)
             h['HISTORY'] = PIXEL_FACTOR_HISTORY_TEXT
 
         # Construct CCDData object:
@@ -84,10 +87,11 @@ class MP_Image:
 
 class MP_ImageList:
     """ A list of MP images, embellished with data common to all the images.
-        Contains all FITS information for one session (one an "Astronight", one minor planet "MP").
+        Contains all FITS information for one "Astronight", one "MP", whether for session or for color.
         Each image is held in a MP_Image object.
+        Multiple filters may be included; they will be split later (in SubarrayList).
         Images are ordered by increasing JD (normal time order). """
-    def __init__(self, directory, mp_id, an, filter, images, ref_star_locations, mp_locations, settings):
+    def __init__(self, directory, mp_id, an, filter, images, control_dict):
         """ Nominal constructor, NOT usually invoked directly;
             Normally use MP_ImageList.from_fits() or mp_imagelist.render_subimagelist() instead.
             :param directory: directory where MP FITS files were originally found. [string]
@@ -95,9 +99,7 @@ class MP_ImageList:
             :param an:
             :param filter:
             :param images:
-            :param ref_star_locations: as from do_workflow.Control(). [list of tuples]
-            :param mp_locations: as from do_workflow.Control(). [list of tuples]
-            :param settings: global settings from calling code. [.do_workflow.Settings object]
+            :param control_dict: session control dict. [py dict]
             """
         self.directory = directory
         self.mp_id = str(mp_id)
@@ -114,22 +116,24 @@ class MP_ImageList:
         self.mp_images = list(zip(*as_tuples))[0]
         self.filenames = [im.filename for im in self.mp_images]
         self.jd_mids = [im.jd_mid for im in self.mp_images]
-        self.ref_star_locations = ref_star_locations
-        self.ref_star_radecs = []                  # "
-        self.mp_locations_2refs = mp_locations  # originally read locations from 2 reference FITS.
-        self.mp_radecs = []              # placeholder
-        self.mp_start_radecs = []
-        self.mp_end_radecs = []
-        self.mp_locations_all = []       # "
-        self.mp_start_locations = []
-        self.mp_end_locations = []
-        self.settings = settings
+        self.ref_star_xy = control_dict['ref star xy']
+        self.ref_star_radecs = []
+        self.mp_xy_2fits = control_dict['mp xy']  # originally read locations from 2 reference FITS.
+        self.control_dict = control_dict  # "
+        self.instrument_dict = ini.make_instrument_dict()
+        self.fwhm_nominal_pixels = self.instrument_dict['nominal fwhm pixels']
+        self.mp_radecs = []               # placeholder
+        self.mp_start_radecs = []         # "
+        self.mp_end_radecs = []           # "
+        self.mp_locations_all = []        # "
+        self.mp_start_locations = []      # "
+        self.mp_end_locations = []        # "
 
         self.subimages = []  # placeholder
-        self.subimage_ref_star_locations = []  # will be a list of lists of [x,y] lists.
-        self.subimage_mp_locations = []
-        self.subimage_mp_start_locations = []
-        self.subimage_mp_end_locations = []
+        self.subimage_ref_star_xy = []  # will be a list of lists of [x,y] lists.
+        self.subimage_mp_xy = []
+        self.subimage_mp_start_xy = []
+        self.subimage_mp_end_xy = []
         self.subimage_sky_adus = []
 
         # Set up (private) dict of images by filename key:
@@ -141,7 +145,7 @@ class MP_ImageList:
         return 'MP_ImageList object of ' + self.mp_label + ' with ' + str(len(self.mp_images)) + ' images.'
 
     @classmethod
-    def from_fits(cls, directory, mp_id, an, filter, ref_star_locations, mp_locations, settings):
+    def from_fits(cls, directory, mp_id, an, filter, control_dict):
         """ Alternate constructor--probably the most used.
             Contains all FITS information for one session (one an "Astronight", one minor planet "MP").
             Each image is held in a MP_Image object, which is a CCDData image with some additional data.
@@ -150,13 +154,10 @@ class MP_ImageList:
         :param mp_id:
         :param an:
         :param filter:
-        :param ref_star_locations: as read from control.txt by do_workflow.Control(). [list of tuples]
-        :param mp_locations: as read from control.txt by do_workflow.Control(). [list of tuples]
-        :param settings: global settings from calling code. [.do_workflow.Settings object]
-
+        :param control_dict: session control dict. [py dict]
         """
         all_filenames = util.get_mp_filenames(directory)  # order not guaranteed.
-        all_images = [MP_Image(directory, fn, settings) for fn in all_filenames]
+        all_images = [MP_Image(directory, fn, control_dict) for fn in all_filenames]
         # Sort filenames and images to chronological:
         all_jds = [im.jd_mid for im in all_images]
         as_tuples = [(im, jd) for (im, jd) in zip(all_images, all_jds)]
@@ -164,8 +165,7 @@ class MP_ImageList:
         as_list = list(zip(*as_tuples))
         sorted_images = as_list[0]
         images_in_filter = [im for im in sorted_images if im.filter == filter]
-        return cls(directory, mp_id, an, filter, images_in_filter,
-                   ref_star_locations, mp_locations, settings)
+        return cls(directory, mp_id, an, filter, images_in_filter, control_dict)
 
     # Allow direct access as image = imlist['some_filename'].
     def __getitem__(self, filename):
@@ -173,9 +173,9 @@ class MP_ImageList:
 
     def calc_ref_star_radecs(self):
         """ Use WCS (plate solution) to find ref stars' RA,Dec, given centers (x,y) from one image. """
-        radius = 4 * self.settings['FWHM_NOMINAL']  # 1/2 size of array including background estimation.
+        radius = 4 * self.instrument_dict['fwhm nominal']  # 1/2 size of array including background estimation.
         mask_radius = radius / 2                    # radius of area for flux centroid estimation.
-        for (filename, x0, y0) in self.ref_star_locations:
+        for (filename, x0, y0) in self.ref_star_xy:
             mp_image = self[filename]
             square = util.Square(mp_image.image, x0, y0, radius, mask_radius)
             xc, yc = square.recentroid()
@@ -187,11 +187,11 @@ class MP_ImageList:
         """ Use WCS (plate solution) to find MP's RA,Dec in *all* images, given MP *center* (x,y).
             Then calculate exposure-start and -stop RA,Dec for each image.
         """
-        radius = 8 * self.settings['FWHM_NOMINAL']  # 1/2 size of array including background estimation.
+        radius = 8 * self.fwhm_nominal_pixels  # 1/2 size of array including background estimation.
         mask_radius = radius / 2                    # radius of area for flux centroid estimation.
         # Get MP center RA,Dec for 2 user-specified images:
         jd_mids, ra_values, dec_values = [], [], []
-        for (filename, x0, y0) in self.mp_locations_2refs[:2]:
+        for (filename, x0, y0) in self.mp_xy_2fits[:2]:
             this_image = self[filename].image
             ra, dec = tuple(this_image.wcs.all_pix2world([list((x0, y0))], 0)[0])
             jd_mids.append(self[filename].jd_mid)
@@ -230,8 +230,8 @@ class MP_ImageList:
     def make_subimages(self):
         """ Aligns only by whole-pixel (integer) shifts in x and y, no rotation or interpolation.
             Very approximate, for initial alignment (and then cropping) use only."""
-        radius = 8 * self.settings['FWHM_NOMINAL']  # 1/2 size of array including background estimation.
-        mask_radius = radius / 2                    # radius of area for flux centroid estimation.
+        radius = 8 * self.fwhm_nominal_pixels  # 1/2 size of array including background estimation.
+        mask_radius = radius / 2               # radius of area for flux centroid estimation.
 
         # Determine offsets, (recentroided and averaged) from ref_star_positions:
         x_means, y_means = [], []
@@ -268,7 +268,7 @@ class MP_ImageList:
         x_max_global_0 = int(ceil(max(x_max)))
         y_min_global_0 = int(floor(min(y_min)))
         y_max_global_0 = int(ceil(max(y_max)))
-        subimage_margin = int(ceil(2 + 12 * self.settings['FWHM_NOMINAL']))
+        subimage_margin = int(ceil(2 + 12 * self.fwhm_nominal_pixels))
         x_min_bounds = [x_min_global_0 - subimage_margin + x_offset for x_offset in x_offsets]
         x_max_bounds = [x_max_global_0 + subimage_margin + x_offset for x_offset in x_offsets]
         y_min_bounds = [y_min_global_0 - subimage_margin + y_offset for y_offset in y_offsets]
@@ -318,7 +318,7 @@ class MP_ImageList:
         # Find largest rectangle having no NaN in any of the arrays, inward spiral search:
         x_min, y_min = 0, 0
         y_max, x_max = arrays[0].shape
-        while min(x_max - x_min, y_max - y_min) > 20 * self.settings['FWHM_NOMINAL']:
+        while min(x_max - x_min, y_max - y_min) > 20 * self.fwhm_nominal_pixels:
             before_limits = (x_min, x_max, y_min, y_max)
             if np.any(np.isnan(pixel_sum[y_min:y_min + 1, x_min:x_max])):  # if top row has NaN.
                 y_min += 1
@@ -342,8 +342,8 @@ class MP_ImageList:
             those expected by time interpolation.
         """
         # Get all subimage ref star locations:
-        radius = 8 * self.settings['FWHM_NOMINAL']  # 1/2 size of array including background estimation.
-        mask_radius = radius / 2                    # radius of area for flux centroid estimation.
+        radius = 8 * self.fwhm_nominal_pixels  # 1/2 size of array including background estimation.
+        mask_radius = radius / 2               # radius of area for flux centroid estimation.
         for si in self.subimages:
             this_subimage_ref_star_locations = []
             for radec in self.ref_star_radecs:
@@ -353,34 +353,34 @@ class MP_ImageList:
                 this_subimage_ref_star_locations.append([xc, yc])
                 # x,y & ra,dec tuples -> lists 2020-08-27.
                 # this_subimage_ref_star_locations.append((xc, yc))
-            self.subimage_ref_star_locations.append(this_subimage_ref_star_locations)
+            self.subimage_ref_star_xy.append(this_subimage_ref_star_locations)
 
         # Get all subimage MP locations:
         for i, si in enumerate(self.subimages):
             radec = self.mp_radecs[i]
             x, y = tuple(si.wcs.all_world2pix([radec], 0, ra_dec_order=True)[0])
-            self.subimage_mp_locations.append([x, y])
-            # self.subimage_mp_locations.append((x, y))  # x,y & ra,dec tuples -> lists 2020-08-27.
+            self.subimage_mp_xy.append([x, y])
+            # self.subimage_mp_xy.append((x, y))  # x,y & ra,dec tuples -> lists 2020-08-27.
             radec_start = self.mp_start_radecs[i]
             x_start, y_start = tuple(si.wcs.all_world2pix([radec_start], 0, ra_dec_order=True)[0])
-            self.subimage_mp_start_locations.append([x_start, y_start])
+            self.subimage_mp_start_xy.append([x_start, y_start])
             # x,y & ra,dec tuples -> lists 2020-08-27.
-            # self.subimage_mp_start_locations.append((x_start, y_start))
+            # self.subimage_mp_start_xy.append((x_start, y_start))
             radec_end = self.mp_end_radecs[i]
             x_end, y_end = tuple(si.wcs.all_world2pix([radec_end], 0, ra_dec_order=True)[0])
-            self.subimage_mp_end_locations.append([x_end, y_end])
+            self.subimage_mp_end_xy.append([x_end, y_end])
             # x,y & ra,dec tuples -> lists 2020-08-27.
-            # self.subimage_mp_end_locations.append((x_end, y_end))
+            # self.subimage_mp_end_xy.append((x_end, y_end))
 
         # # TEST ONLY: test subimage MP locations (ex earliest and latest) for time-interpolation accuracy:
-        # xy_earliest = self.subimage_mp_locations[0]
-        # xy_latest = self.subimage_mp_locations[-1]
-        # for i, mploc in enumerate(self.subimage_mp_locations[1:-1]):
+        # xy_earliest = self.subimage_mp_xy[0]
+        # xy_latest = self.subimage_mp_xy[-1]
+        # for i, mploc in enumerate(self.subimage_mp_xy[1:-1]):
         #     jd_fraction = (self.jd_mids[i] - self.jd_mids[0]) / (self.jd_mids[-1] - self.jd_mids[0])
         #     x_expected = xy_earliest[0] + jd_fraction * (xy_latest[0] - xy_earliest[0])
         #     y_expected = xy_earliest[1] + jd_fraction * (xy_latest[1] - xy_earliest[1])
-        #     x_actual = self.subimage_mp_locations[i][0]
-        #     y_actual = self.subimage_mp_locations[i][1]
+        #     x_actual = self.subimage_mp_xy[i][0]
+        #     y_actual = self.subimage_mp_xy[i][1]
         #     distance = sqrt((x_actual - x_expected)**2 + (y_actual - y_expected)**2)
         #     print('{:3d}'.format(i) + ':',
         #           '  expected=', '{:8.3f}'.format(x_expected), '{:8.3f}'.format(x_expected),
@@ -388,6 +388,7 @@ class MP_ImageList:
         #           '  dist=', '{:8.3f}'.format(distance), 'pixels.')
 
     def make_subarrays(self):
+        # TODO: make a list of SubarrayList objects, one for each filter (for sessions, still only one).
         subarrays = []
         for i, si in enumerate(self.subimages):
             subarray = Subarray(filename=self.filenames[i],
@@ -398,24 +399,25 @@ class MP_ImageList:
                                 original_image_shape=self.mp_images[i].image.shape,
                                 original_mp_location=self.mp_locations_all[i],
                                 original_sky_adu=self.subimage_sky_adus[i],
-                                ref_star_locations=self.subimage_ref_star_locations[i],
-                                mp_location=self.subimage_mp_locations[i],
-                                mp_start_location=self.subimage_mp_start_locations[i],
-                                mp_end_location=self.subimage_mp_end_locations[i])
+                                ref_star_locations=self.subimage_ref_star_xy[i],
+                                mp_location=self.subimage_mp_xy[i],
+                                mp_start_location=self.subimage_mp_start_xy[i],
+                                mp_end_location=self.subimage_mp_end_xy[i])
             subarrays.append(subarray)
         subarray_list = SubarrayList(subarrays=subarrays,
                                      mp_id=self.mp_id,
                                      an=self.an,
                                      filter=self.filter,
-                                     settings=self.settings)
+                                     control_dict=self.control_dict)
         return subarray_list
 
 
 class Subarray:
+    """ Hold one numpy subarray and matching mask, for an image segment.
+        NO WCS, no RA,Dec data for MP or ref stars. """
     def __init__(self, filename, array, mask, jd_mid, exposure, original_image_shape, original_mp_location,
                  original_sky_adu, ref_star_locations, mp_location, mp_start_location, mp_end_location):
-        """ Hold one subarray and matching mask, for an image segment.  For late-stage processing.
-            NO WCS, no RA,Dec data for MP or ref stars.
+        """
         :param filename: [string]
         :param array: [ndarray of floats]
         :param mask: [ndarray of bools]
@@ -463,13 +465,24 @@ class Subarray:
 
 
 class SubarrayList:
-    def __init__(self, subarrays, mp_id, an, filter, settings):
+    """ A list of Subarrays for one filter only.
+        This class's methods contain the bulk of the bulldozer star-removal algorithm.
+    """
+    def __init__(self, subarrays, mp_id, an, filter, control_dict):
+        """
+        :param subarrays: [list of Subarray objects]
+        :param mp_id:
+        :param an:
+        :param filter:
+        :param control_dict:
+        """
         self.subarrays = subarrays
         self.mp_id = mp_id
         self.an = an
         self.filter = filter
-        self.settings = settings
-        self.nominal_sigma = None
+        self.control_dict = control_dict
+        self.instrument_dict = ini.make_instrument_dict()
+        self.nominal_sigma = self.instrument_dict['nominal fwhm pixels']
         self.best_bkgd_array = None
 
         # Set up (private) dict of subarrays by filename key:
@@ -494,8 +507,8 @@ class SubarrayList:
                  [list of lists of numpy.ndarrays]
         """
         # Make ref star PSF arrays (very small kernel-sized images) [save as util.Square objects]:
-        radius = 5 * self.settings['FWHM_NOMINAL']
-        mask_radius = 2.5 * self.settings['FWHM_NOMINAL']
+        radius = 5 * self.nominal_sigma
+        mask_radius = 2.5 * self.nominal_sigma
         for sa in self.subarrays:
             subarray_psfs = []  # for this subarray (all ref stars).
             for x_center, y_center in sa.ref_star_locations:
@@ -578,7 +591,7 @@ class SubarrayList:
         :return: None.
         """
         # Set target ref star pixel x,y locations as the mean recentroided location, across subarrays:
-        radius = 5 * self.settings['FWHM_NOMINAL']
+        radius = 5 * self.nominal_sigma
         target_ref_star_locations = []
         ref_star_sigmas = []
         for i_rs in range(len(self.subarrays[0].ref_star_locations)):
@@ -787,7 +800,8 @@ class SubarrayList:
                                                               mask=masked_square.mask,
                                                               invert_mask=True)  # True to hide MP.
             sa.mp_flux = mp_aperture_flux - mp_aperture_area * bkgd_median
-            sigma2_ap = self.settings['CCD_GAIN'] * (mp_aperture_flux + mp_aperture_area * bkgd_median)
+            sigma2_ap = self.instrument_dict['ccd gain'] * \
+                        (mp_aperture_flux + mp_aperture_area * bkgd_median)
             sigma2_bkgd = mp_aperture_area * bkgd_std**2
             sa.mp_sigma = sqrt(sigma2_ap + sigma2_bkgd)
 
@@ -823,6 +837,8 @@ class SubarrayList:
 
 PLOTTING_FUNCTIONS____________________________________ = 0
 
+# TODO: consider moving (most of) these to the relevant class.
+
 
 def plot_subimages(figtitle, imagelist_object, plot_titles=None):
     arrays = [si.data for si in imagelist_object.subimages]
@@ -853,7 +869,8 @@ def plot_arrays(figtitle, arrays, plot_titles):
     plot_minimum = np.median([np.min(im) for im in arrays])
     plot_maximum = max([np.max(im) for im in arrays])
     norm = ImageNormalize(vmin=plot_minimum, vmax=plot_maximum, stretch=LogStretch(200.0))
-    print('Plot (' + figtitle + '): adu range=', '{:.3f}'.format(plot_minimum), 'to {:.3f}'.format(plot_maximum))
+    print('Plot (' + figtitle + '): adu range=', '{:.3f}'.format(plot_minimum),
+          'to {:.3f}'.format(plot_maximum))
 
     for i_figure in range(n_figures):
         n_plots_remaining = n_plots - (i_figure * n_plots_per_figure)

@@ -340,3 +340,14 @@ class Settings:
 #     # Allow direct access as control=Control(); value = control['somekey'].
 #     def __getitem__(self, key):
 #         return self._data.get(key, None)  # return None if key absent.
+
+# def test_dict_from_directives_file():
+#     d = util.dict_from_directives_file(DEFAULTS_FULLPATH)
+#     assert isinstance(d, dict)
+#     all_keys = set(d.keys())
+#     required_keys = set(workflow_session.REQUIRED_DEFAULT_DIRECTIVES)
+#     assert len(required_keys - all_keys) == 0  # all required must be present.
+#     assert d['INSTRUMENT'] == 'Borea'
+#     assert d['MAX_CATALOG_R_MAG'] == '16'
+#     assert d['FIT_JD'] == 'Yes'
+#     assert 'INVALID_KEY' not in all_keys  # absent key returns None.

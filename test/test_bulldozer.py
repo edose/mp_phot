@@ -10,10 +10,10 @@ from astropy.nddata import CCDData
 import matplotlib.pyplot as plt
 
 # From this package:
-from mp_phot import measure
-from mp_phot import do_workflow
+from mp_phot import bulldozer
+from mp_phot import workflow_session
 from mp_phot import util
-from test.test_do_workflow import make_test_control_txt
+from test.XXX_test_do_workflow import make_test_control_txt
 
 MP_PHOT_ROOT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEST_SESSIONS_DIRECTORY = os.path.join(MP_PHOT_ROOT_DIRECTORY, 'test', '$sessions_for_test')
@@ -26,7 +26,7 @@ def test_class_mp_image():
     mp_directory = os.path.join(TEST_SESSIONS_DIRECTORY, 'MP_' + TEST_MP, 'AN' + TEST_AN)
     mp_filenames = util.get_mp_filenames(mp_directory)
     fn = mp_filenames[0]
-    im = measure.MP_Image(mp_directory, fn, do_workflow.Settings('Borea'))
+    im = bulldozer.MP_Image(mp_directory, fn, workflow_session.Settings('Borea'))
     assert im.filter == 'Clear'
     assert im.exposure == 67.0
     assert im.jd == pytest.approx(2459018.6697821761)
@@ -34,23 +34,23 @@ def test_class_mp_image():
     assert im.ref_star_radecs == []
     assert im.mp_radec is None
     assert im.image.shape == (2047, 3072)
-    assert measure.PIXEL_FACTOR_HISTORY_TEXT in im.image.meta['HISTORY']
+    assert bulldozer.PIXEL_FACTOR_HISTORY_TEXT in im.image.meta['HISTORY']
 
 
 def test_class_mp_imagelist_1():
     # Set up non-image data required:
     mp_directory = os.path.join(TEST_SESSIONS_DIRECTORY, 'MP_' + TEST_MP, 'AN' + TEST_AN)
     make_test_control_txt()
-    control_data = do_workflow.Control()
+    control_data = workflow_session.Control()
     ref_star_locations = control_data['REF_STAR_LOCATION']
     mp_locations = control_data['MP_LOCATION']
-    settings = do_workflow.Settings()
+    settings = workflow_session.Settings()
 
     # Test primary constructor (with pre-made MP_Image objects):
     all_mp_filenames = util.get_mp_filenames(mp_directory)
-    all_images = [measure.MP_Image(mp_directory, fn, settings) for fn in all_mp_filenames]
-    imlist = measure.MP_ImageList(mp_directory, TEST_MP, TEST_AN, 'Clear', all_images,
-                                  ref_star_locations, mp_locations, settings)
+    all_images = [bulldozer.MP_Image(mp_directory, fn, settings) for fn in all_mp_filenames]
+    imlist = bulldozer.MP_ImageList(mp_directory, TEST_MP, TEST_AN, 'Clear', all_images,
+                                    ref_star_locations, mp_locations, settings)
     assert imlist.directory == mp_directory
     assert imlist.mp_id == TEST_MP
     assert imlist.an == TEST_AN
@@ -59,8 +59,8 @@ def test_class_mp_imagelist_1():
     assert all([im.filter == 'Clear' for im in imlist.mp_images])  # each image must have correct filter.
     for i in range(1, len(imlist.mp_images) - 1):
         assert imlist.mp_images[i].jd_mid > imlist.mp_images[i - 1].jd_mid  # chronological order.
-    assert len(imlist.ref_star_locations) == 3
-    assert imlist.ref_star_locations[0] == ['MP_191-0001-Clear.fts', 790.6, 1115.0]
+    assert len(imlist.ref_star_xy) == 3
+    assert imlist.ref_star_xy[0] == ['MP_191-0001-Clear.fts', 790.6, 1115.0]
     assert len(imlist.mp_locations) == 2
     assert imlist.mp_locations[1] == ['MP_191-0028-Clear.fts', 1144.3, 1099.3]
     for mp_image in imlist.mp_images:
@@ -69,14 +69,14 @@ def test_class_mp_imagelist_1():
         assert imlist[fn].jd_mid == mp_image.jd_mid
 
     # Test .from_fits() classmethod constructor (making MP_Image objects from FITS files in directory):
-    imlist = measure.MP_ImageList.from_fits(mp_directory, TEST_MP, TEST_AN, 'Clear',
-                                            ref_star_locations, mp_locations, settings)
+    imlist = bulldozer.MP_ImageList.from_fits(mp_directory, TEST_MP, TEST_AN, 'Clear',
+                                              ref_star_locations, mp_locations, settings)
     assert imlist.directory == mp_directory
     assert imlist.mp_id == TEST_MP
     assert imlist.an == TEST_AN
     assert imlist.filter == 'Clear'
     assert len(imlist.mp_images) == 5
-    assert all([isinstance(im, measure.MP_Image) for im in imlist.mp_images])
+    assert all([isinstance(im, bulldozer.MP_Image) for im in imlist.mp_images])
     all_mp_filenames = util.get_mp_filenames(mp_directory)
     mpil_filenames = [im.filename for im in imlist.mp_images]
     assert set(mpil_filenames).issubset(set(all_mp_filenames))
@@ -90,14 +90,14 @@ def test_class_mp_imagelist_2():
     # Set up non-image data required:
     mp_directory = os.path.join(TEST_SESSIONS_DIRECTORY, 'MP_' + TEST_MP, 'AN' + TEST_AN)
     make_test_control_txt()
-    control_data = do_workflow.Control()
+    control_data = workflow_session.Control()
     ref_star_locations = control_data['REF_STAR_LOCATION']
     mp_locations = control_data['MP_LOCATION']
-    settings = do_workflow.Settings()
+    settings = workflow_session.Settings()
 
     # Test .calc_ref_star_radecs():
-    imlist = measure.MP_ImageList.from_fits(mp_directory, TEST_MP, TEST_AN, 'Clear',
-                                            ref_star_locations, mp_locations, settings)
+    imlist = bulldozer.MP_ImageList.from_fits(mp_directory, TEST_MP, TEST_AN, 'Clear',
+                                              ref_star_locations, mp_locations, settings)
     assert imlist.ref_star_radecs == []
     imlist.calc_ref_star_radecs()
     assert len(imlist.ref_star_radecs) == len(imlist.ref_star_locations)
@@ -106,8 +106,8 @@ def test_class_mp_imagelist_2():
     assert imlist.ref_star_radecs[2][0] == pytest.approx(267.622, 0.001)
 
     # Test .calc_mp_radecs():
-    imlist = measure.MP_ImageList.from_fits(mp_directory, TEST_MP, TEST_AN, 'Clear',
-                                            ref_star_locations, mp_locations, settings)
+    imlist = bulldozer.MP_ImageList.from_fits(mp_directory, TEST_MP, TEST_AN, 'Clear',
+                                              ref_star_locations, mp_locations, settings)
     assert imlist.mp_radecs == []
     assert imlist.mp_locations_all == []
     imlist.calc_mp_radecs()
@@ -120,8 +120,8 @@ def test_class_mp_imagelist_2():
     assert imlist.mp_locations_all[3] == (pytest.approx(1099.83, 0.5), pytest.approx(1090.55, 0.5))
 
     # Test .make_subimages():
-    imlist = measure.MP_ImageList.from_fits(mp_directory, TEST_MP, TEST_AN, 'Clear',
-                                            ref_star_locations, mp_locations, settings)
+    imlist = bulldozer.MP_ImageList.from_fits(mp_directory, TEST_MP, TEST_AN, 'Clear',
+                                              ref_star_locations, mp_locations, settings)
     imlist.calc_ref_star_radecs()
     imlist.calc_mp_radecs()
     imlist.make_subimages()
@@ -158,7 +158,7 @@ def test_class_mp_imagelist_2():
 
     # Test .make_subarrays():
     subarray_list = imlist.make_subarrays()
-    assert isinstance(subarray_list, measure.SubarrayList)
+    assert isinstance(subarray_list, bulldozer.SubarrayList)
     assert len(subarray_list.subarrays) == 5
     assert all([isinstance(sa.array, np.ndarray) for sa in subarray_list.subarrays])
     assert all([isinstance(sa.mask,  np.ndarray) for sa in subarray_list.subarrays])
@@ -174,18 +174,18 @@ def test_class_subarraylist():
     # Set up everything up to spawning of subarrays:
     mp_directory = os.path.join(TEST_SESSIONS_DIRECTORY, 'MP_' + TEST_MP, 'AN' + TEST_AN)
     make_test_control_txt()
-    control_data = do_workflow.Control()
-    # ref_star_locations = control_data['REF_STAR_LOCATION']
-    # ref_star_locations = [['MP_191-0001-Clear.fts',  790.6, 1115.0],
+    control_data = workflow_session.Control()
+    # ref_star_xy = control_data['REF_STAR_LOCATION']
+    # ref_star_xy = [['MP_191-0001-Clear.fts',  790.6, 1115.0],
     #                       ['MP_191-0028-Clear.fts', 1583.2, 1192.3]]  # 28: far but bright
-    # ref_star_locations = [['MP_191-0001-Clear.fts',  790.6, 1115.0],
+    # ref_star_xy = [['MP_191-0001-Clear.fts',  790.6, 1115.0],
     #                       ['MP_191-0028-Clear.fts', 1392.7, 1063.4]]  # 28: v.isolated, mid-distance
     ref_star_locations = [['MP_191-0001-Clear.fts',  790.6, 1115.0],
                           ['MP_191-0028-Clear.fts', 1198.5, 1084.4]]  # 28: close but faint
     mp_locations = control_data['MP_LOCATION']
-    settings = do_workflow.Settings()
-    imlist = measure.MP_ImageList.from_fits(mp_directory, TEST_MP, TEST_AN, 'Clear',
-                                            ref_star_locations, mp_locations, settings)
+    settings = workflow_session.Settings()
+    imlist = bulldozer.MP_ImageList.from_fits(mp_directory, TEST_MP, TEST_AN, 'Clear',
+                                              ref_star_locations, mp_locations, settings)
     imlist.calc_ref_star_radecs()
     imlist.calc_mp_radecs()
     imlist.make_subimages()
@@ -215,9 +215,9 @@ def test_class_subarraylist():
     # measure.plot_one_array("Averaged (MP-free) Subarray", subarray_list.best_bkgd_array)
 
     subarray_list.make_mp_only_subarrays()
-    measure.plot_arrays('MP-only (bkgd-subtr) subarrays',
-                        [sa.realigned_mp_only_array for sa in subarray_list.subarrays],
-                        [sa.filename for sa in subarray_list.subarrays])
+    bulldozer.plot_arrays('MP-only (bkgd-subtr) subarrays',
+                          [sa.realigned_mp_only_array for sa in subarray_list.subarrays],
+                          [sa.filename for sa in subarray_list.subarrays])
 
     subarray_list.do_mp_aperture_photometry()
     for i_sa, sa in enumerate(subarray_list.subarrays):

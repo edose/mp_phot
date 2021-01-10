@@ -6,12 +6,13 @@ import pytest
 
 # External packages:
 import numpy as np
+import pandas as pd
 from astropy.nddata import CCDData
 import astropy.io.fits as apyfits
 
 # From this package:
 from mp_phot import util
-from mp_phot import workflow_session
+# from mp_phot import workflow_session
 
 MP_PHOT_ROOT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEST_SESSIONS_DIRECTORY = os.path.join(MP_PHOT_ROOT_DIRECTORY, 'test', '$sessions_for_test')
@@ -32,21 +33,27 @@ def test_get_mp_filenames():
     assert len(set(mp_filenames)) == len(mp_filenames)  # filenames are unique.
 
 
-def test_process_mp_and_an():
-    # TODO: move target to util.py, test it there.
-    mp_id, an_string = util.process_mp_and_an(1108, 20200617)  # case: integers.
-    assert mp_id == '#1108'
+def test_get_mp_and_an_strings():
+    # Normal cases:
+    mp_str, an_str = util.get_mp_and_an_strings(1108, 20200617)  # case: integers.
+    assert mp_str == '1108'
+    assert an_str == '20200617'
+    mp_id, an_string = util.get_mp_and_an_strings('1108', '20200617')  # case: strs (MP numbered).
+    assert mp_id == '1108'
     assert an_string == '20200617'
-    mp_id, an_string = util.process_mp_and_an('1108', '20200617')  # case: strs (MP numbered).
-    assert mp_id == '#1108'
+    mp_id, an_string = util.get_mp_and_an_strings('1997 TX3', '20200617')  # case: strs (MP unnumbered).
+    assert mp_id == '~1997 TX3'
     assert an_string == '20200617'
-    mp_id, an_string = util.process_mp_and_an('1997 TX3', '20200617')  # case: strs (MP unnumbered).
-    assert mp_id == '*1997 TX3'
-    assert an_string == '20200617'
+    # Error cases:
+    return_value = util.get_mp_and_an_strings(1108, 22200617)  # bad AN date.
+    assert return_value is None
+    return_value = util.get_mp_and_an_strings(1108, 'hahaha')  # AN date doesn't represent int.
+    assert return_value is None
+    return_value = util.get_mp_and_an_strings(1108, 20200617.5)  # AN not neither int nor string.
+    assert return_value is None
 
 
 def test_fits_header_value():
-    # TODO: move target to util.py, test it there.
     fullpath = os.path.join(TEST_SESSIONS_DIRECTORY, 'MP_191', 'AN20200617', 'MP_191-0001-Clear.fts')
     hdu = apyfits.open(fullpath)[0]
     assert util.fits_header_value(hdu, 'FILTER') == 'Clear'
@@ -55,7 +62,6 @@ def test_fits_header_value():
 
 
 def test_fits_is_plate_solved():
-    # TODO: move target to util.py, test it there.
     fullpath = os.path.join(TEST_SESSIONS_DIRECTORY, 'MP_191', 'AN20200617', 'MP_191-0001-Clear.fts')
     hdu = apyfits.open(fullpath)[0]
     assert util.fits_is_plate_solved(hdu) is True
@@ -67,7 +73,6 @@ def test_fits_is_plate_solved():
 
 
 def test_fits_is_calibrated():
-    # TODO: move target to util.py, test it there.
     fullpath = os.path.join(TEST_SESSIONS_DIRECTORY, 'MP_191', 'AN20200617', 'MP_191-0001-Clear.fts')
     hdu = apyfits.open(fullpath)[0]
     assert util.fits_is_calibrated(hdu) is True
@@ -78,7 +83,6 @@ def test_fits_is_calibrated():
 
 
 def test_fits_focal_length():
-    # TODO: move target to util.py, test it there.
     fullpath = os.path.join(TEST_SESSIONS_DIRECTORY, 'MP_191', 'AN20200617', 'MP_191-0001-Clear.fts')
     hdu = apyfits.open(fullpath)[0]
     focallen_value = util.fits_focal_length(hdu)
@@ -86,18 +90,6 @@ def test_fits_focal_length():
     del hdu.header['FOCALLEN']
     fl_value = util.fits_focal_length(hdu)
     assert 0.97 * focallen_value <= fl_value <= 1.03 * focallen_value
-
-
-# def test_dict_from_directives_file():
-#     d = util.dict_from_directives_file(DEFAULTS_FULLPATH)
-#     assert isinstance(d, dict)
-#     all_keys = set(d.keys())
-#     required_keys = set(workflow_session.REQUIRED_DEFAULT_DIRECTIVES)
-#     assert len(required_keys - all_keys) == 0  # all required must be present.
-#     assert d['INSTRUMENT'] == 'Borea'
-#     assert d['MAX_CATALOG_R_MAG'] == '16'
-#     assert d['FIT_JD'] == 'Yes'
-#     assert 'INVALID_KEY' not in all_keys  # absent key returns None.
 
 
 def test_calc_background_adus():
@@ -242,6 +234,48 @@ def test_class_square():
     assert c[1] == pytest.approx(313.78, abs=0.1)
 
 
+def test_make_pill_mask():
+    pm = util.make_pill_mask((40, 30), 15, 20, 10, 18, 4)
+    assert isinstance(pm, np.ndarray)
+    assert pm.shape == (40, 30)  # [y,x]
+    assert np.sum(pm == False) == 92  # number of valid pixels.
+
+    pm = util.make_pill_mask((40, 40), 10, 20, 10, 18, 7)
+    assert pm.shape == (40, 40)  # [y,x]
+    assert np.sum(pm == False) == 179  # number of valid pixels.
+
+    pm = util.make_pill_mask((40, 40), 8, 20, 28, 20, 3)
+    assert pm.shape == (40, 40)  # [y,x]
+    assert np.sum(pm == False) == 169  # number of valid pixels.
+
+
+def test_distance_to_line():
+    assert util.distance_to_line(3, 4, -1, 7, -1, -33) == 4.0       # horizontal line.
+    assert util.distance_to_line(35, 4, -100, 7, 100, 7) == 3.0     # verical line.
+    assert util.distance_to_line(15, 12, -12, 43, 13, -17) == 13.0  # normal within line segment.
+    assert util.distance_to_line(15, 12, -12, 43, 23, -41) == 13.0  # normal outside line segment.
+    assert util.distance_to_line(3, 4, -1, 7, -1, -33, dist_ab=40.0) == 4.0
+
+
+def test_reorder_df_columns():
+    # Construct test df:
+    dict_list = []
+    dict_list.append({'AA': 1, 'BB': 32, 'CC': 'hahaha'})
+    dict_list.append({'AA': 3, 'BB': 41, 'CC': 'hohoho'})
+    dict_list.append({'AA': 2, 'BB': -3, 'CC': 'dreeep'})
+    df = pd.DataFrame(data=dict_list)
+    assert list(df.columns) == ['AA', 'BB', 'CC']
+    df1 = util.reorder_df_columns(df, ['CC'])
+    assert list(df1.columns) == ['CC', 'AA', 'BB']
+    assert (df1.iloc[1])['CC'] == 'hohoho'
+    df2 = util.reorder_df_columns(df, ['CC'], ['AA'])
+    assert list(df2.columns) == ['CC', 'BB', 'AA']
+    assert (df2.iloc[1])['CC'] == 'hohoho'
+
+
+_____PROBABLY_NOT_USED_________________________ = 0
+
+
 def test_shift_2d_array():
     xx, yy = np.meshgrid(range(6), range(5))
 
@@ -291,18 +325,3 @@ def test_shift_2d_array():
     cc = util.shift_2d_array(xx, 100, 100)   # test default fill value.
     assert (cc == np.full_like(xx, np.nan)).all()
     assert cc.shape == np.full_like(xx, np.nan).shape
-
-
-def test_make_pill_mask():
-    pm = util.make_pill_mask((40, 30), 15, 20, 10, 18, 4)
-    assert isinstance(pm, np.ndarray)
-    assert pm.shape == (40, 30)  # [y,x]
-    assert np.sum(pm == False) == 92  # number of valid pixels.
-
-    pm = util.make_pill_mask((40, 40), 10, 20, 10, 18, 7)
-    assert pm.shape == (40, 40)  # [y,x]
-    assert np.sum(pm == False) == 179  # number of valid pixels.
-
-    pm = util.make_pill_mask((40, 40), 8, 20, 28, 20, 3)
-    assert pm.shape == (40, 40)  # [y,x]
-    assert np.sum(pm == False) == 169  # number of valid pixels.
