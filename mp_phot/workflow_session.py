@@ -323,7 +323,7 @@ def calc_mp_fluxes():
     # from test.XXX_test_do_workflow import make_test_control_txt
     # make_test_control_txt()
     # # control_data = Control()
-    # ref_star_xy = [['MP_191-0001-Clear.fts',  790.6, 1115.0],
+    # given_ref_star_xy = [['MP_191-0001-Clear.fts',  790.6, 1115.0],
     #                       ['MP_191-0028-Clear.fts', 1198.5, 1084.4]]  # 28: close but faint
     # mp_locations = control_data['MP_LOCATION']
     # # settings = Settings()
@@ -332,10 +332,13 @@ def calc_mp_fluxes():
     # MP (minor planet) stack of calls:
     imlist = MP_ImageList.from_fits(this_directory, mp_string, an_string, 'Clear', control_dict)
     imlist.calc_ref_star_radecs()
-    imlist.calc_mp_radecs()
+    imlist.calc_mp_radecs_and_xy()
     imlist.make_subimages()
+    imlist.wcs_align_subimages()
+    imlist.trim_nans_from_subimages()
     imlist.get_subimage_locations()
-    subarray_list = imlist.make_subarrays()
+    subarray_list = imlist.make_subarrays()  # make simple numpy arrays, give up CCDData objects.
+
     subarray_list.make_matching_kernels()
     subarray_list.convolve_subarrays()
     subarray_list.realign()
@@ -511,7 +514,7 @@ def make_control_dict():
     control_dict['ref star xy'] = ref_star_xy_list
 
     # Parse and overwrite 'mp xy':
-    mp_xy_dict = dict()
+    mp_xy_list = []
     mp_xy_lines = [line.strip() for line in control_dict['mp xy']]
     for line in mp_xy_lines:
         items = line.replace(',', ' ').rsplit(maxsplit=2)  # for each line, items are: filename x y
@@ -519,14 +522,14 @@ def make_control_dict():
             filename = items[0]
             x = ini.float_or_warn(items[1], filename + 'MP X' + items[1])
             y = ini.float_or_warn(items[2], filename + 'MP X' + items[2])
-            mp_xy_dict[filename] = (x, y)
+            mp_xy_list.append((filename, x, y))
         elif len(items != 2):
             print(' >>>>> ERROR: ' + items[1] + ' MP XY invalid: ' + line)
             return None
-    if len(mp_xy_dict) < 2:
-        print(' >>>>> ERROR: control \'ref star xy\' has ', str(len(mp_xy_dict)),
-              ' entries, must have exactly 2.')
-    control_dict['mp xy'] = mp_xy_dict
+    if len(mp_xy_list) != 2:
+        print(' >>>>> ERROR: control \'ref star xy\' has ', str(len(mp_xy_list)),
+              ' entries, but must have exactly 2.')
+    control_dict['mp xy'] = mp_xy_list
 
     # Selection Criteria section, Omit elements:
     control_dict['omit comps'] = ini.multiline_ini_value_to_items(' '.join(control_dict['omit comps']))

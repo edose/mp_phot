@@ -30,10 +30,10 @@ def test_make_control_dict():
     cd = ws.make_control_dict()
     assert isinstance(cd, dict)
     assert len(cd['ref star xy']) == 3
-    assert cd['ref star xy'][1] == ('MP_191-0001-Clear_Added.fts', 819.3, 1011.7)
+    assert cd['ref star xy'][1] == ('MP_191-0001-Clear.fts', 819.3, 1011.7)
     assert len(cd['mp xy']) == 2
-    assert cd['mp xy']['MP_191-0001-Clear.fts'] == (826.4, 1077.4)
-    assert cd['mp xy']['MP_191-0028-Clear.fts'] == (1144.3, 1099.3)
+    assert cd['mp xy'][0] == ('MP_191-0001-Clear.fts', 826.4, 1077.4)
+    assert cd['mp xy'][1] == ('MP_191-0028-Clear.fts', 1144.3, 1099.3)
     assert set(cd['omit comps']) == set(['444', '333', '23', '1'])
     assert cd['omit obs'] == []
     assert set(cd['omit images']) == set(['xxx.fts', 'yyy.fts'])

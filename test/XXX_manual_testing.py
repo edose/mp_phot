@@ -39,7 +39,7 @@ def test_mp_added_fits():
                                         ref_star_locations=ref_star_locations, mp_locations=mp_locations,
                                         settings=Settings())
         imlist.calc_ref_star_radecs()
-        imlist.calc_mp_radecs()
+        imlist.calc_mp_radecs_and_xy()
         imlist.make_subimages()
         imlist.get_subimage_locations()
         subarray_list = imlist.make_subarrays()
@@ -63,7 +63,7 @@ def test_mp_added_fits():
 
 def do_raw_aperture_photometry(imlist):
     """ Do aperture photometry on original FITS images (for comparison with improved algorithms).
-    :param imlist: MP_ImageList *after* .calc_mp_radecs() has been run. [MP_ImageList object]
+    :param imlist: MP_ImageList *after* .calc_mp_radecs_and_xy() has been run. [MP_ImageList object]
     :return: [None] output is printed to console.
     """
     from mp_phot.util import Square
@@ -109,12 +109,12 @@ def do_raw_aperture_photometry(imlist):
 #         mp_location_late = (mp_file_late, mp['xy1_late'][0], mp['xy1_late'][1])
 #         mp_locations = [mp_location_early, mp_location_late]
 #         imlist = MP_ImageList.from_fits(READ_TEST_FITS_DIR, '191', '20200617', 'Clear',
-#                                         ref_star_xy=[],  # ref_star not needed here.
+#                                         given_ref_star_xy=[],  # ref_star not needed here.
 #                                         mp_locations=mp_locations, settings=Settings())
 #         if i == 0:
 #             # arrays will accumulate new MP signals; using a dict to ensure sync on writing.
 #             output_dict = {mpi.filename: mpi.array.copy() for mpi in imlist.mp_images}
-#         imlist.calc_mp_radecs()
+#         imlist.calc_mp_radecs_and_xy()
 #         for i_mpi, mpi in enumerate(imlist.mp_images):  # i.e., CCDData objects.
 #             fn = mpi.filename
 #             x0, y0 =
@@ -157,7 +157,7 @@ def do_raw_aperture_photometry(imlist):
     #
     #
     #
-    #     df = calc_mp_radecs(df, mp_file_early, mp_file_late, source['xy1_early'], source['xy1_late'])
+    #     df = calc_mp_radecs_and_xy(df, mp_file_early, mp_file_late, source['xy1_early'], source['xy1_late'])
     #     for i, ccddata in enumerate(df['Image']):
     #         x0, y0 = tuple(ccddata.wcs.all_world2pix([[df.iloc[i]['MP_RA'],
     #                                                    df.iloc[i]['MP_Dec']]], 0,

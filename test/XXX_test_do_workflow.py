@@ -52,16 +52,16 @@ def test_get_context():
 #         lines = f.readlines()
 #     new_lines = lines.copy()
 #     ref_star_lines_written, mp_lines_written = 0, 0
-#     ref_star_xy = [('MP_191-0001-Clear.fts', 790.6, 1115.0),
+#     given_ref_star_xy = [('MP_191-0001-Clear.fts', 790.6, 1115.0),
 #                           ('MP_191-0001-Clear.fts', 819.3, 1011.7),
 #                           ('MP_191-0001-Clear.fts', 1060.4, 1066.0)]
 #     mp_locations = [('MP_191-0001-Clear.fts', 826.4, 1077.4),
 #                     ('MP_191-0028-Clear.fts', 1144.3, 1099.3)]
 #     for i, line in enumerate(lines):
 #         if line.startswith('#REF_STAR_LOCATION'):
-#             new_lines[i] = '#REF_STAR_LOCATION  ' + ref_star_xy[ref_star_lines_written][0] +\
-#                            '  ' + str(ref_star_xy[ref_star_lines_written][1]) +\
-#                            '  ' + str(ref_star_xy[ref_star_lines_written][2]) + '\n'
+#             new_lines[i] = '#REF_STAR_LOCATION  ' + given_ref_star_xy[ref_star_lines_written][0] +\
+#                            '  ' + str(given_ref_star_xy[ref_star_lines_written][1]) +\
+#                            '  ' + str(given_ref_star_xy[ref_star_lines_written][2]) + '\n'
 #             ref_star_lines_written += 1
 #         if line.startswith('#MP_LOCATION'):
 #             new_lines[i] = '#MP_LOCATION  ' + mp_locations[mp_lines_written][0] +\
@@ -131,7 +131,7 @@ WORKFLOW_FUNCTIONS_________________________________________ = 0
 #         assert os.path.isfile(LOG_FILENAME)
 #         assert os.path.isfile(CONTROL_FILENAME)
 #
-#     # ref_star_xy = [('MP_191-0001-Clear.fts', 1000, 100), ('MP_191-0001-Clear.fts', 1500, 1000)]
+#     # given_ref_star_xy = [('MP_191-0001-Clear.fts', 1000, 100), ('MP_191-0001-Clear.fts', 1500, 1000)]
 #     # mp_locations = [('MP_191-0001-Clear.fts', 100, 1000), ('MP_191-0028-Clear.fts', 200, 1050)]
 
 
