@@ -20,6 +20,8 @@ TEST_SESSIONS_DIRECTORY = os.path.join(MP_PHOT_ROOT_DIRECTORY, 'test', '$session
 TEST_MP = '191'
 TEST_AN = '20200617'
 
+""" These tests are mostly to identify regression errors as the later workflow steps evolve. """
+
 
 def test_class_mp_image():
     # Test constructor, just picking first test FITS:
@@ -137,6 +139,7 @@ def test_class_mp_imagelist_2():
     imlist = bulldozer.MP_ImageList.from_fits(this_directory, TEST_MP, TEST_AN, 'Clear', control_dict)
     imlist.calc_ref_star_radecs()
     imlist.calc_mp_radecs_and_xy()
+    # imlist.make_subimages(do_plot=True)
     imlist.make_subimages(do_plot=False)
 
     # Test .wcs_align_subimages():
@@ -157,137 +160,168 @@ def test_class_mp_imagelist_2():
     assert all([np.sum(np.isnan(si.data)) == 0 for si in imlist.subimages])
 
     # Test .get_subimage_locations():
-    # THIS TEST SECTION IN DEVELOPMENT 2021-01-11 pm.
-    iiii = 4
+    assert imlist.subimage_ref_star_xy == imlist.subimage_mp_xy == []
+    assert imlist.subimage_mp_start_xy == imlist.subimage_mp_end_xy == []
     imlist.get_subimage_locations()
+    assert len(imlist.subimage_ref_star_xy) == 5     # images.
+    assert len(imlist.subimage_ref_star_xy[0]) == 3  # ref stars.
+    assert imlist.subimage_ref_star_xy[0][0][0] == pytest.approx(61.286, abs=0.001)
+    assert imlist.subimage_ref_star_xy[0][0][1] == pytest.approx(166.958, abs=0.001)
+    assert imlist.subimage_ref_star_xy[4][2][1] == pytest.approx(118.266, abs=0.001)
+    assert len(imlist.subimage_mp_xy) == 5     # images.
+    assert len(imlist.subimage_mp_xy[0]) == 2  # x and y.
+    assert imlist.subimage_mp_xy[0][0] == pytest.approx(97.400, abs=0.001)
+    assert imlist.subimage_mp_xy[0][1] == pytest.approx(129.400, abs=0.001)
+    assert imlist.subimage_mp_xy[4][1] == pytest.approx(144.666, abs=0.001)
+    assert len(imlist.subimage_mp_start_xy) == 5     # images.
+    assert len(imlist.subimage_mp_start_xy[0]) == 2  # x and y.
+    assert imlist.subimage_mp_start_xy[0][0] == pytest.approx(96.9670, abs=0.001)
+    assert imlist.subimage_mp_start_xy[0][1] == pytest.approx(129.373, abs=0.001)
+    assert imlist.subimage_mp_start_xy[4][1] == pytest.approx(144.638, abs=0.001)
+    assert len(imlist.subimage_mp_end_xy) == 5     # images.
+    assert len(imlist.subimage_mp_end_xy[0]) == 2  # x and y.
+    assert imlist.subimage_mp_end_xy[0][0] == pytest.approx(97.833, abs=0.001)
+    assert imlist.subimage_mp_end_xy[0][1] == pytest.approx(129.427, abs=0.001)
+    assert imlist.subimage_mp_end_xy[4][1] == pytest.approx(144.693, abs=0.001)
+
+    # Test .get_make_subarrays():
+    sal = imlist.make_subarrays(do_plot=False)
+    # Tests of SubarrayList:
+    assert len(sal.subarrays) == len(imlist.subimages)
+    assert all([isinstance(sa, bulldozer.Subarray) for sa in sal.subarrays])
+    assert (sal.mp_id, sal.an, sal.filter) == ('191', '20200617', 'Clear')
+    assert sal.control_dict == imlist.control_dict
+    # Tests of the Subarrays within SubarrayList:
+    assert all([sa.filename == fn for (sa, fn) in zip(sal.subarrays, imlist.filenames)])
+    assert all([np.array_equal(sa.array, si.data, equal_nan=False)
+                for (sa, si) in zip(sal.subarrays, imlist.subimages)])
+    assert all([np.array_equal(sa.mask, np.full_like(sa.array, False, np.bool), equal_nan=False)
+                for sa in sal.subarrays])
+    assert all([sa.jd_mid == jd_mid for (sa, jd_mid) in zip(sal.subarrays, imlist.jd_mids)])
+    assert all([sa.exposure == exposure for (sa, exposure) in zip(sal.subarrays, imlist.exposures)])
+    assert all([sa.mp_xy == mp_xy for (sa, mp_xy) in zip(sal.subarrays, imlist.subimage_mp_xy)])
+    assert all([sa.mp_start_xy == mp_xy for (sa, mp_xy) in zip(sal.subarrays, imlist.subimage_mp_start_xy)])
+    assert all([sa.mp_end_xy == mp_xy for (sa, mp_xy) in zip(sal.subarrays, imlist.subimage_mp_end_xy)])
+    assert all([sa.ref_star_xy_list == ref_star_xy
+                for (sa, ref_star_xy) in zip(sal.subarrays, imlist.subimage_ref_star_xy)])
+
+
+def test_class_subarraylist_1():
+    """ Test classes Subarray and SubarrayList (initial function calls) after object construction (which
+            is done by MP_Imagelist.make_subarrays().
+        NB: classes Subarray and SubarrayList apply to color workflow also,
+            though Workflow session data are used here for testing.
+    """
+    # Set up, through object construction (tested in test functions above):
+    workflow_session.resume(TEST_SESSIONS_DIRECTORY, TEST_MP, TEST_AN)
+    context, defaults_dict, control_dict, log_file = \
+        workflow_session.orient_this_function('test_class_mp_imagelist1')
+    this_directory, mp_string, an_string, filter_string = context
+    control_dict = workflow_session.make_control_dict()
+    all_mp_filenames = util.get_mp_filenames(this_directory)
+    imlist = bulldozer.MP_ImageList.from_fits(this_directory, TEST_MP, TEST_AN, 'Clear', control_dict)
+    imlist.calc_ref_star_radecs()
+    imlist.calc_mp_radecs_and_xy()
+    # imlist.make_subimages(do_plot=True)
+    imlist.make_subimages(do_plot=False)
+    imlist.wcs_align_subimages()
+    imlist.trim_nans_from_subimages()
+    imlist.get_subimage_locations()
+    sal = imlist.make_subarrays(do_plot=False)
+
+    # Test .make_matching_kernels():
+    assert all([sa.ref_star_psfs is None for sa in sal.subarrays])
+    assert all([sa.matching_kernel is None for sa in sal.subarrays])
+    sal.make_matching_kernels()
+    assert all([10 < sa.fwhm < 13 for sa in sal.subarrays])
+    assert all([sa.matching_kernel.shape == (51, 51) for sa in sal.subarrays])
+    assert all([np.sum(sa.matching_kernel) == pytest.approx(1, 0.000001) for sa in sal.subarrays])
+    assert all(len(sa.ref_star_psfs) == 3 for sa in sal.subarrays)
+    assert sal.subarrays[4].ref_star_psfs[0].x_center == 62
+    assert sal.subarrays[4].ref_star_psfs[0].y_center == 167
+    assert sal.subarrays[4].ref_star_psfs[0].shape == (51, 51)
+    for sa in sal.subarrays:
+        assert all([np.sum(psf.data) == pytest.approx(1.0, 0.000001) for psf in sa.ref_star_psfs])
+        assert all([np.array_equal(psf.mask, np.full_like(psf.data, False, np.bool), equal_nan=False)
+                    for psf in sa.ref_star_psfs])
+
+    # Test .convolve_subarrays():
+    assert all([sa.convolved_array is None for sa in sal.subarrays])
+    sal.convolve_subarrays()
+    assert all([sa.convolved_array.shape == (230, 402) for sa in sal.subarrays])
+    assert np.max(sal.subarrays[0].convolved_array) == pytest.approx(1565, abs=1)
+    assert np.min(sal.subarrays[0].convolved_array) == pytest.approx(131, abs=1)
+    assert np.sum(sal.subarrays[0].convolved_array) == pytest.approx(15482530, abs=10)
+
+    # Test .realign():
+    # THIS TEST SECTION IN DEVELOPMENT 2021-01-18.
 
 
 
 
 
-# def test_class_mp_imagelist_2():
-#     # Set up non-image data required:
+
+
+# def test_class_subarraylist():
+#     # Set up everything up to spawning of subarrays:
 #     mp_directory = os.path.join(TEST_SESSIONS_DIRECTORY, 'MP_' + TEST_MP, 'AN' + TEST_AN)
 #     make_test_control_txt()
 #     control_data = workflow_session.Control()
-#     ref_star_locations = control_data['REF_STAR_LOCATION']
+#     # given_ref_star_xy = control_data['REF_STAR_LOCATION']
+#     # given_ref_star_xy = [['MP_191-0001-Clear.fts',  790.6, 1115.0],
+#     #                       ['MP_191-0028-Clear.fts', 1583.2, 1192.3]]  # 28: far but bright
+#     # given_ref_star_xy = [['MP_191-0001-Clear.fts',  790.6, 1115.0],
+#     #                       ['MP_191-0028-Clear.fts', 1392.7, 1063.4]]  # 28: v.isolated, mid-distance
+#     ref_star_locations = [['MP_191-0001-Clear.fts',  790.6, 1115.0],
+#                           ['MP_191-0028-Clear.fts', 1198.5, 1084.4]]  # 28: close but faint
 #     mp_locations = control_data['MP_LOCATION']
 #     settings = workflow_session.Settings()
-#
-#     # Test .calc_mp_radecs_and_xy():
-
-#
-#     # Test .make_subimages():
 #     imlist = bulldozer.MP_ImageList.from_fits(mp_directory, TEST_MP, TEST_AN, 'Clear',
 #                                               ref_star_locations, mp_locations, settings)
 #     imlist.calc_ref_star_radecs()
 #     imlist.calc_mp_radecs_and_xy()
 #     imlist.make_subimages()
-#     # measure.plot_subimages('TEST new subimages', imlist)
-#     assert len(imlist.subimages) == 5
-#     assert all([isinstance(si, CCDData) for si in imlist.subimages])
-#     assert all([si.shape == imlist.subimages[0].shape for si in imlist.subimages])
-#
-#     # Test .wcs_align_subimages() and .trim_nans_from_subimages() together:
-#     # print('===== Subimages before wcs alignment and trim nans:')
-#     # radec_top_left = [tuple(si.wcs.all_pix2world([list((0, 0))], 0)[0]) for si in imlist.subimages]
-#     # for i, radec in enumerate(radec_top_left):
-#     #     print('  top left   ', str(i), '   {:.6f}'.format(radec[0]), '   {:.6f}'.format(radec[1]))
-#     # y_br, x_br = imlist.subimages[0].shape
-#     # radec_bottom_rt = [tuple(si.wcs.all_pix2world([list((x_br, y_br))], 0)[0]) for si in imlist.subimages]
-#     # for i, radec in enumerate(radec_bottom_rt):
-#     #     print('  bottom rt  ', str(i), '   {:.6f}'.format(radec[0]), '   {:.6f}'.format(radec[1]))
-#     #
-#     # imlist.wcs_align_subimages()
-#     # imlist.trim_nans_from_subimages()
-#     # print('===== Subimages after wcs alignment and trim nans:')
-#     # measure.plot_subimages('TEST aligned & nan-trimmed subimages', imlist)  # ##############
-#     # radec_top_left = [tuple(si.wcs.all_pix2world([list((0, 0))], 0)[0]) for si in imlist.subimages]
-#     # for i, radec in enumerate(radec_top_left):
-#     #     print('  top left   ', str(i), '   {:.6f}'.format(radec[0]), '   {:.6f}'.format(radec[1]))
-#     # y_br, x_br = imlist.subimages[0].shape
-#     # radec_bottom_rt = [tuple(si.wcs.all_pix2world([list((x_br, y_br))], 0)[0]) for si in imlist.subimages]
-#     # for i, radec in enumerate(radec_bottom_rt):
-#     #     print('  bottom rt  ', str(i), '   {:.6f}'.format(radec[0]), '   {:.6f}'.format(radec[1]))
-#
-#     # Test .get_subimage_locations():
+#     # measure.plot_subimages('Initial SUBIMAGES', imlist)
 #     imlist.get_subimage_locations()
-#     assert len(imlist.subimage_mp_locations) == 5
-#
-#     # Test .make_subarrays():
 #     subarray_list = imlist.make_subarrays()
-#     assert isinstance(subarray_list, bulldozer.SubarrayList)
-#     assert len(subarray_list.subarrays) == 5
-#     assert all([isinstance(sa.array, np.ndarray) for sa in subarray_list.subarrays])
-#     assert all([isinstance(sa.mask,  np.ndarray) for sa in subarray_list.subarrays])
-#     assert all([isinstance(sa.ref_star_locations, list) for sa in subarray_list.subarrays])
-#     assert isinstance(subarray_list.subarrays[0].ref_star_locations, list)
-#     assert isinstance(subarray_list.subarrays[0].ref_star_locations[0], tuple)
-#     assert isinstance(subarray_list.subarrays[0].ref_star_locations[0][0], float)
-#     assert all([isinstance(sa.mp_location, tuple) for sa in subarray_list.subarrays])
-#     assert isinstance(subarray_list.subarrays[0].mp_location[0], float)
-
-
-def test_class_subarraylist():
-    # Set up everything up to spawning of subarrays:
-    mp_directory = os.path.join(TEST_SESSIONS_DIRECTORY, 'MP_' + TEST_MP, 'AN' + TEST_AN)
-    make_test_control_txt()
-    control_data = workflow_session.Control()
-    # given_ref_star_xy = control_data['REF_STAR_LOCATION']
-    # given_ref_star_xy = [['MP_191-0001-Clear.fts',  790.6, 1115.0],
-    #                       ['MP_191-0028-Clear.fts', 1583.2, 1192.3]]  # 28: far but bright
-    # given_ref_star_xy = [['MP_191-0001-Clear.fts',  790.6, 1115.0],
-    #                       ['MP_191-0028-Clear.fts', 1392.7, 1063.4]]  # 28: v.isolated, mid-distance
-    ref_star_locations = [['MP_191-0001-Clear.fts',  790.6, 1115.0],
-                          ['MP_191-0028-Clear.fts', 1198.5, 1084.4]]  # 28: close but faint
-    mp_locations = control_data['MP_LOCATION']
-    settings = workflow_session.Settings()
-    imlist = bulldozer.MP_ImageList.from_fits(mp_directory, TEST_MP, TEST_AN, 'Clear',
-                                              ref_star_locations, mp_locations, settings)
-    imlist.calc_ref_star_radecs()
-    imlist.calc_mp_radecs_and_xy()
-    imlist.make_subimages()
-    # measure.plot_subimages('Initial SUBIMAGES', imlist)
-    imlist.get_subimage_locations()
-    subarray_list = imlist.make_subarrays()
-    # measure.plot_subarrays('Initial SUBARRAYS', subarray_list)
-
-    # Setup now done, test .make_matching_kernels():
-    subarray_list.make_matching_kernels()
-    # measure.plot_arrays('Matching kernels', [sa.matching_kernel for sa in subarray_list.subarrays],
-    #                     [sa.filename for sa in subarray_list.subarrays])
-
-    subarray_list.convolve_subarrays()
-    # measure.plot_arrays('After convolution', [sa.convolved_array for sa in subarray_list.subarrays],
-    #                     [sa.filename for sa in subarray_list.subarrays])
-
-    subarray_list.realign()
-    # for i_sa, sa in enumerate(subarray_list.subarrays):
-    #     for rsl in sa.realigned_ref_star_locations:
-    #         print('Ref star locations(' + str(i_sa) + '): ' + str(rsl))
-    #     print('MP locations' + str(i_sa) + '): ' + str(sa.realigned_ref_star_locations))
-    # measure.plot_arrays('After realignment', [sa.realigned_array for sa in subarray_list.subarrays],
-    #                     [sa.filename for sa in subarray_list.subarrays])
-
-    subarray_list.make_best_bkgd_array()
-    # measure.plot_one_array("Averaged (MP-free) Subarray", subarray_list.best_bkgd_array)
-
-    subarray_list.make_mp_only_subarrays()
-    bulldozer.plot_arrays('MP-only (bkgd-subtr) subarrays',
-                          [sa.realigned_mp_only_array for sa in subarray_list.subarrays],
-                          [sa.filename for sa in subarray_list.subarrays])
-
-    subarray_list.do_mp_aperture_photometry()
-    for i_sa, sa in enumerate(subarray_list.subarrays):
-        print(str(i_sa), 'MP flux=', '{:.3f}'.format(sa.mp_flux),
-              '   flux sigma=', '{:.3f}'.format(sa.mp_sigma))
-
-    df_mp_only = subarray_list.make_df_mp_only()
-    iiii = 4
-
-    # subarray_list.convolve_full_arrays([mpi.image.data for mpi in imlist.mp_images[0:1]])
-
-    plt.show()
+#     # measure.plot_subarrays('Initial SUBARRAYS', subarray_list)
+#
+#     # Setup now done, test .make_matching_kernels():
+#     subarray_list.make_matching_kernels()
+#     # measure.plot_arrays('Matching kernels', [sa.matching_kernel for sa in subarray_list.subarrays],
+#     #                     [sa.filename for sa in subarray_list.subarrays])
+#
+#     subarray_list.convolve_subarrays()
+#     # measure.plot_arrays('After convolution', [sa.convolved_array for sa in subarray_list.subarrays],
+#     #                     [sa.filename for sa in subarray_list.subarrays])
+#
+#     subarray_list.realign()
+#     # for i_sa, sa in enumerate(subarray_list.subarrays):
+#     #     for rsl in sa.realigned_ref_star_xy_list:
+#     #         print('Ref star locations(' + str(i_sa) + '): ' + str(rsl))
+#     #     print('MP locations' + str(i_sa) + '): ' + str(sa.realigned_ref_star_xy_list))
+#     # measure.plot_arrays('After realignment', [sa.realigned_array for sa in subarray_list.subarrays],
+#     #                     [sa.filename for sa in subarray_list.subarrays])
+#
+#     subarray_list.make_best_bkgd_array()
+#     # measure.plot_one_array("Averaged (MP-free) Subarray", subarray_list.best_bkgd_array)
+#
+#     subarray_list.make_mp_only_subarrays()
+#     bulldozer.plot_arrays('MP-only (bkgd-subtr) subarrays',
+#                           [sa.realigned_mp_only_array for sa in subarray_list.subarrays],
+#                           [sa.filename for sa in subarray_list.subarrays])
+#
+#     subarray_list.do_mp_aperture_photometry()
+#     for i_sa, sa in enumerate(subarray_list.subarrays):
+#         print(str(i_sa), 'MP flux=', '{:.3f}'.format(sa.mp_flux),
+#               '   flux sigma=', '{:.3f}'.format(sa.mp_sigma))
+#
+#     df_mp_only = subarray_list.make_df_mp_only()
+#     iiii = 4
+#
+#     # subarray_list.convolve_full_arrays([mpi.image.data for mpi in imlist.mp_images[0:1]])
+#
+#     plt.show()
 
 
 
