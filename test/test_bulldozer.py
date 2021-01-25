@@ -61,8 +61,8 @@ def test_class_mp_imagelist_1():
     assert all([im.filter == 'Clear' for im in imlist.mp_images])  # each image must have correct filter.
     for i in range(1, len(imlist.mp_images) - 1):
         assert imlist.mp_images[i].jd_mid > imlist.mp_images[i - 1].jd_mid  # chronological order.
-    assert len(imlist.given_ref_star_xy) == 3
-    assert imlist.given_ref_star_xy[0] == ('MP_191-0001-Clear.fts', 790.6, 1115.0)
+    assert len(imlist.given_ref_stars_xy) == 3
+    assert imlist.given_ref_stars_xy[0] == ('MP_191-0001-Clear.fts', 790.6, 1115.0)
     assert len(imlist.given_mp_xy) == 2
     assert imlist.given_mp_xy[-1] == ('MP_191-0028-Clear.fts', 1144.3, 1099.3)
     for mp_image in imlist.mp_images:
@@ -81,19 +81,19 @@ def test_class_mp_imagelist_1():
     all_mp_filenames = util.get_mp_filenames(this_directory)
     mpil_filenames = [im.filename for im in imlist.mp_images]
     assert set(mpil_filenames).issubset(set(all_mp_filenames))
-    assert len(imlist.given_ref_star_xy) == 3
-    assert imlist.given_ref_star_xy[0] == ('MP_191-0001-Clear.fts', 790.6, 1115.0)
+    assert len(imlist.given_ref_stars_xy) == 3
+    assert imlist.given_ref_stars_xy[0] == ('MP_191-0001-Clear.fts', 790.6, 1115.0)
     assert len(imlist.given_mp_xy) == 2
     assert imlist.given_mp_xy[-1] == ('MP_191-0028-Clear.fts', 1144.3, 1099.3)
 
-    # Test .calc_ref_star_radecs():
+    # Test .calc_ref_stars_radecs():
     imlist = bulldozer.MP_ImageList.from_fits(this_directory, TEST_MP, TEST_AN, 'Clear', control_dict)
-    assert imlist.ref_star_radecs == []
-    imlist.calc_ref_star_radecs()
-    assert len(imlist.ref_star_radecs) == len(imlist.given_ref_star_xy)
-    assert imlist.ref_star_radecs[0][0] == pytest.approx(267.673, 0.001)
-    assert imlist.ref_star_radecs[1][1] == pytest.approx(-6.962, 0.001)
-    assert imlist.ref_star_radecs[2][0] == pytest.approx(267.622, 0.001)
+    assert imlist.ref_stars_radecs == []
+    imlist.calc_ref_stars_radecs()
+    assert len(imlist.ref_stars_radecs) == len(imlist.given_ref_stars_xy)
+    assert imlist.ref_stars_radecs[0][0] == pytest.approx(267.673, 0.001)
+    assert imlist.ref_stars_radecs[1][1] == pytest.approx(-6.962, 0.001)
+    assert imlist.ref_stars_radecs[2][0] == pytest.approx(267.622, 0.001)
 
     # Test .calc_mp_radecs_and_xy():
     # Carry imlist in from previous test section.
@@ -137,7 +137,7 @@ def test_class_mp_imagelist_2():
     control_dict = workflow_session.make_control_dict()
     all_mp_filenames = util.get_mp_filenames(this_directory)
     imlist = bulldozer.MP_ImageList.from_fits(this_directory, TEST_MP, TEST_AN, 'Clear', control_dict)
-    imlist.calc_ref_star_radecs()
+    imlist.calc_ref_stars_radecs()
     imlist.calc_mp_radecs_and_xy()
     # imlist.make_subimages(do_plot=True)
     imlist.make_subimages(do_plot=False)
@@ -160,14 +160,14 @@ def test_class_mp_imagelist_2():
     assert all([np.sum(np.isnan(si.data)) == 0 for si in imlist.subimages])
 
     # Test .get_subimage_locations():
-    assert imlist.subimage_ref_star_xy == imlist.subimage_mp_xy == []
+    assert imlist.subimage_ref_stars_xy == imlist.subimage_mp_xy == []
     assert imlist.subimage_mp_start_xy == imlist.subimage_mp_end_xy == []
     imlist.get_subimage_locations()
-    assert len(imlist.subimage_ref_star_xy) == 5     # images.
-    assert len(imlist.subimage_ref_star_xy[0]) == 3  # ref stars.
-    assert imlist.subimage_ref_star_xy[0][0][0] == pytest.approx(61.286, abs=0.001)
-    assert imlist.subimage_ref_star_xy[0][0][1] == pytest.approx(166.958, abs=0.001)
-    assert imlist.subimage_ref_star_xy[4][2][1] == pytest.approx(118.266, abs=0.001)
+    assert len(imlist.subimage_ref_stars_xy) == 5     # images.
+    assert len(imlist.subimage_ref_stars_xy[0]) == 3  # ref stars.
+    assert imlist.subimage_ref_stars_xy[0][0][0] == pytest.approx(61.286, abs=0.001)
+    assert imlist.subimage_ref_stars_xy[0][0][1] == pytest.approx(166.958, abs=0.001)
+    assert imlist.subimage_ref_stars_xy[4][2][1] == pytest.approx(118.266, abs=0.001)
     assert len(imlist.subimage_mp_xy) == 5     # images.
     assert len(imlist.subimage_mp_xy[0]) == 2  # x and y.
     assert imlist.subimage_mp_xy[0][0] == pytest.approx(97.400, abs=0.001)
@@ -202,8 +202,8 @@ def test_class_mp_imagelist_2():
     assert all([sa.mp_xy == mp_xy for (sa, mp_xy) in zip(sal.subarrays, imlist.subimage_mp_xy)])
     assert all([sa.mp_start_xy == mp_xy for (sa, mp_xy) in zip(sal.subarrays, imlist.subimage_mp_start_xy)])
     assert all([sa.mp_end_xy == mp_xy for (sa, mp_xy) in zip(sal.subarrays, imlist.subimage_mp_end_xy)])
-    assert all([sa.ref_star_xy_list == ref_star_xy
-                for (sa, ref_star_xy) in zip(sal.subarrays, imlist.subimage_ref_star_xy)])
+    assert all([sa.ref_stars_xy == ref_stars_xy
+                for (sa, ref_stars_xy) in zip(sal.subarrays, imlist.subimage_ref_stars_xy)])
 
 
 def test_class_subarraylist_1():
@@ -220,7 +220,7 @@ def test_class_subarraylist_1():
     control_dict = workflow_session.make_control_dict()
     all_mp_filenames = util.get_mp_filenames(this_directory)
     imlist = bulldozer.MP_ImageList.from_fits(this_directory, TEST_MP, TEST_AN, 'Clear', control_dict)
-    imlist.calc_ref_star_radecs()
+    imlist.calc_ref_stars_radecs()
     imlist.calc_mp_radecs_and_xy()
     # imlist.make_subimages(do_plot=True)
     imlist.make_subimages(do_plot=False)
@@ -230,20 +230,20 @@ def test_class_subarraylist_1():
     sal = imlist.make_subarrays(do_plot=False)
 
     # Test .make_matching_kernels():
-    assert all([sa.ref_star_psfs is None for sa in sal.subarrays])
+    assert all([sa.ref_stars_psf is None for sa in sal.subarrays])
     assert all([sa.matching_kernel is None for sa in sal.subarrays])
     sal.make_matching_kernels()
     assert all([10 < sa.fwhm < 13 for sa in sal.subarrays])
     assert all([sa.matching_kernel.shape == (51, 51) for sa in sal.subarrays])
     assert all([np.sum(sa.matching_kernel) == pytest.approx(1, 0.000001) for sa in sal.subarrays])
-    assert all(len(sa.ref_star_psfs) == 3 for sa in sal.subarrays)
-    assert sal.subarrays[4].ref_star_psfs[0].x_center == 62
-    assert sal.subarrays[4].ref_star_psfs[0].y_center == 167
-    assert sal.subarrays[4].ref_star_psfs[0].shape == (51, 51)
+    assert all(len(sa.ref_stars_psf) == 3 for sa in sal.subarrays)
+    assert sal.subarrays[4].ref_stars_psf[0].x_center == 62
+    assert sal.subarrays[4].ref_stars_psf[0].y_center == 167
+    assert sal.subarrays[4].ref_stars_psf[0].shape == (51, 51)
     for sa in sal.subarrays:
-        assert all([np.sum(psf.data) == pytest.approx(1.0, 0.000001) for psf in sa.ref_star_psfs])
+        assert all([np.sum(psf.data) == pytest.approx(1.0, 0.000001) for psf in sa.ref_stars_psf])
         assert all([np.array_equal(psf.mask, np.full_like(psf.data, False, np.bool), equal_nan=False)
-                    for psf in sa.ref_star_psfs])
+                    for psf in sa.ref_stars_psf])
 
     # Test .convolve_subarrays():
     assert all([sa.convolved_array is None for sa in sal.subarrays])
@@ -255,8 +255,26 @@ def test_class_subarraylist_1():
 
     # Test .realign():
     # THIS TEST SECTION IN DEVELOPMENT 2021-01-18.
+    assert 1 < sal.nominal_sigma < 20  # sanity check only
+    assert sal.maximum_sigma is None
+    sal.realign(do_print=True)
+    assert 1 < sal.maximum_sigma < 20  # sanity check only
 
 
+# def test_xxx_verify_transform_functionality():
+# # A mockup test of Similarity Transformation, one stage only, to ensure we understand the parameters.
+#     # This works 2021-01-24.
+#     import skimage.transform as skt
+#     blank_array = np.zeros(shape=(16, 16))
+#     src_xy = [(5, 6), (7, 12)]  # definitely in (x,y)
+#     dst_xy = [(6, 7), (9, 12.1)]  # "
+#     src_image = np.copy(blank_array)
+#     for pt in src_xy:
+#         src_image[pt[1], pt[0]] = 100  # must set image pixels in (y,x), i.e., in numpy array convention.
+#     tform = skt.SimilarityTransform()
+#     tform.estimate(src=np.array(src_xy), dst=np.array(dst_xy))
+#     dst_array = skt.warp(src_image, inverse_map=tform.inverse, order=1, mode='edge', clip=False)
+#     print(tform)
 
 
 
