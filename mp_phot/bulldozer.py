@@ -31,7 +31,7 @@ import mp_phot.ini as ini
 PINPOINT_PLTSOLVD_TEXT = 'Plate has been solved by PinPoint'
 PIXEL_FACTOR_HISTORY_TEXT = 'Pixel scale factor applied by apply_pixel_scale_factor().'
 RADIANS_PER_DEGREE = pi / 180.0
-MAX_RMS_MISALIGNMENT_FOR_CONVERGENCE = 5.0  # in millipixels
+MAX_RMS_MISALIGNMENT_FOR_CONVERGENCE = 5  # in millipixels
 FWHM_PER_SIGMA = 2.0 * sqrt(2.0 * log(2))  # ca. 2.35482
 
 
@@ -338,8 +338,7 @@ class MP_ImageList:
             print(' >>>>> ERROR .trim_nans_from_subimages(): the ' + str(len(arrays)) +
                   ' arrays differ in shape, but must be uniform shape.')
             return None
-        pixel_sum = np.sum(a for a in arrays)  # for each pixel: if any array is NaN, then sum will be NaN.
-
+        pixel_sum = np.sum(arrays, axis=0)  # for each pixel: if any array is NaN, sum will be NaN.
         # Find largest rectangle having no NaN in any of the arrays, inward spiral search:
         x_min, y_min = 0, 0
         y_max, x_max = arrays[0].shape
@@ -511,6 +510,7 @@ class SubarrayList:
         self.instrument_dict = ini.make_instrument_dict(self.defaults_dict)
         self.nominal_sigma = self.instrument_dict['nominal fwhm pixels']  # TODO: convert FWHM to sigma.
         self.maximum_sigma = None
+        self.best_rms_misalignment = None
         self.best_bkgd_array = None
 
         # Set up (private) dict of subarrays by filename key:
@@ -591,9 +591,9 @@ class SubarrayList:
                 matching_kernel = create_matching_kernel(this_psf.data, target_psf,
                                                          CosineBellWindow(alpha=0.35))
                 sa_matching_kernels.append(matching_kernel)
-            sa.matching_kernel = np.mean(np.stack(sa_matching_kernels), axis=0)
+            sa.matching_kernel = np.mean(sa_matching_kernels, axis=0)
 
-    def convolve_subarrays(self):
+    def convolve_subarrays(self, do_plot=False):
         """ Convolve subarrays with matching kernels to render new subarrays with very nearly Gaussian
             ref star PSFs with very nearly uniform sigma.
         :return: None. SubarrayList.Subarray objects are populated with: convolved arrays.
@@ -601,6 +601,10 @@ class SubarrayList:
         # new_subarrays = []
         for i_sa, sa in enumerate(self.subarrays):
             sa.convolved_array = convolve(sa.array.copy(), sa.matching_kernel, boundary='extend')
+        if do_plot:
+            plot_arrays('Convolved subarrays', [sa.convolved_array for sa in self.subarrays],
+                        [sa.filename for sa in self.subarrays])
+
 
     # def convolve_full_arrays(self, array_list):
     #     """ This is only for feasibility timing. """
@@ -637,7 +641,7 @@ class SubarrayList:
             :return: tuple of (recentroided_ref_star_xy_list, rms_misalignment).
             """
             ref_star_count = len(ref_stars_xy_list[0])
-            total_squared_misalignment = 0.0  # in millipixels.
+            total_squared_misalignment = 0.0  # accumulator, in millipixels.
             n_centroids = 0
             recentroided_ref_stars_xy_list = []
             for i_sa, sa in enumerate(array_list):
@@ -666,6 +670,7 @@ class SubarrayList:
         current_mp_xy_list = [sa.mp_xy for sa in self.subarrays]
         current_mp_start_xy_list = [sa.mp_start_xy for sa in self.subarrays]
         current_mp_end_xy_list = [sa.mp_end_xy for sa in self.subarrays]
+        rms_misalignment = None  # keep IDE happy
 
         # Set target ref star pixel x,y locations to the mean (over all subarrays) recentroided x,y:
         square_radius = 5 * self.nominal_sigma
@@ -748,13 +753,15 @@ class SubarrayList:
                           'dy=' + '{:6.3f}'.format(sa_transform.translation[1]))
 
             # Apply transforms to subarrays (via scikit-image.transform.warp()):
-            new_array_list = []
+            transformed_array_list = []
             for i_sa, sa in enumerate(self.subarrays):
                 sa_transform = transform_list[i_sa]
                 # Apply this subarray's own transform, i.e., 'realign' the subarray:
-                new_array_list.append(skt.warp(current_array_list[i_sa],
-                                               inverse_map=sa_transform.inverse,
-                                               order=1, mode='edge', clip=False))
+                transformed_array = skt.warp(current_array_list[i_sa],
+                                             inverse_map=sa_transform.inverse,
+                                             order=1, mode='edge', clip=False)
+                transformed_array /= (sa_transform.scale ** 2)  # preserve total flux.
+                transformed_array_list.append(transformed_array)
 
             # Apply transform to MP xy locations, and save them:
             transformed_mp_xy_list, transformed_mp_start_xy_list, transformed_mp_end_xy_list = [], [], []
@@ -769,7 +776,7 @@ class SubarrayList:
 
             # Save new arrays and MP locations as current (to use in next loop cycle, or as final values):
             # NB: new ref star locations come from estimate_misalignment_rms(), below.
-            current_array_list = new_array_list
+            current_array_list = transformed_array_list
 
             # Get final RMS misalignment if we never converged:
             if i_loop == max_iterations - 1:
@@ -781,7 +788,8 @@ class SubarrayList:
                 current_ref_stars_xy_list = recentroided_ref_stars_xy_list
         # ===== END MAIN REALIGNMENT LOOP ===========================================:
 
-        # When loop finished, save best realigned data in lists within Subarray objects:
+        # When loop finished, save best realigned data:
+        self.best_rms_misalignment = rms_misalignment
         for i_sa, sa in enumerate(self.subarrays):
             sa.realigned_array = current_array_list[i_sa]
             sa.realigned_ref_stars_xy = current_ref_stars_xy_list[i_sa]
@@ -789,7 +797,7 @@ class SubarrayList:
             sa.realigned_mp_start_xy = current_mp_start_xy_list[i_sa]
             sa.realigned_mp_end_xy = current_mp_end_xy_list[i_sa]
 
-    def make_best_bkgd_array(self):
+    def make_best_bkgd_array(self, do_plot=False):
         """ Make reference (MP-masked, background-subtracted) averaged subarray.
             This is what this sliver of sky would look like, on average, if the MP were not there at all.
         :return: None
@@ -813,48 +821,69 @@ class SubarrayList:
         if n_masked_out > 0:
             print(' >>>>> WARNING: averaged_subarray has', str(n_masked_out), 'pixels masked out.')
         self.best_bkgd_array = averaged_ccddata.data
+        if do_plot:
+            plot_arrays('Best bkgd array', [self.best_bkgd_array], [''])
 
-    def make_mp_only_subarrays(self):
+    def make_mp_only_subarrays(self, do_plot=False):
         """ For each realigned, background-subtracted, MP-masked subarray, find (using ordinary least-sq):
             source_factor (amount of star flux relative to averaged subarray source fluxes), and
             background_offset (uniform background ADUs, relative to averaged subarray flat background).
-        :return: [None]
+        :return: None. SubarrayList.Subarray objects are populated with: sa.realigned_mp_only_array
         """
-        # Decompose subarrays into source component and background component (extract coefficients):
-        # fit = fitting.LinearLSQFitter()
-        # simple_linear = models.Linear1D()
-        indep_var_unmasked = np.ravel(self.best_bkgd_array)
-        source_factors, background_offsets = [], []
+        subarray_shape = self.best_bkgd_array.shape  # uniform across subarrays.
+        # To fit backgrounds' x- and y-gradients (these are uniform across subarrays):
+        y_grid, x_grid = np.mgrid[0:subarray_shape[0], 0:subarray_shape[1]]
+        x_mean = (x_grid.shape[1] - 1) / 2.0
+        y_mean = (y_grid.shape[0] - 1) / 2.0
+        x_grid_scaled = (x_grid - x_mean) / 1024  # scaled so that 1 unit denotes 1024 pixels' distance.
+        y_grid_scaled = (y_grid - y_mean) / 1024  # "
+        x1024 = np.ravel(x_grid_scaled)
+        y1024 = np.ravel(y_grid_scaled)
+        # To fit backgrounds' parabolic (vignetting) gradient (uniform across subarrays):
+        vignette_grid_scaled = 1024 * (x_grid_scaled ** 2 + y_grid_scaled ** 2)
+        vignette = np.ravel(vignette_grid_scaled)
         for i, sa in enumerate(self.subarrays):
-            dep_var_unmasked = np.ravel(sa.realigned_array)
-            # NB: Polarities in next line: to_keep=True reveals, numpy mask=True hides.
-            to_keep = np.ravel(sa.realigned_mp_mask)
-            indep_var = indep_var_unmasked[to_keep]
-            dep_var = dep_var_unmasked[to_keep]
-            # Adding backgrounds' x- and y-gradients (next lines) as fit parameters doesn't seem to help.
-            # y_grid, x_grid = np.mgrid[0:self.best_bkgd_array.shape[0], 0:self.best_bkgd_array.shape[1]]
-            # y_mean = (y_grid.shape[0] - 1) / 2.0
-            # x_mean = (x_grid.shape[1] - 1) / 2.0
-            # y_1024 = (np.ravel(y_grid)[to_keep] - y_mean) / 1024
-            # x_1024 = (np.ravel(x_grid)[to_keep] - x_mean) / 1024
-            # indep_var = np.column_stack((indep_var, x_1024, y_1024))
-            indep_var = sma.add_constant(data=indep_var)  # statsmodels' weird way of "adding" an intercept.
-            results = sma.OLS(dep_var, indep_var).fit()
-            background_offsets.append(results.params[0])
-            source_factors.append(results.params[1])
-            print('\ndecomp:', str(i), sa.filename,
-                  '  bkgd_offset=', '{:.3f}'.format(background_offsets[i]),
-                  '({:.3f})'.format(results.bse[0]),
-                  '  source_factor=', '{:.4f}'.format(source_factors[i]),
-                  '({:.4f})'.format(results.bse[0]),
-                  '  R2=', '{:.6f}'.format(results.rsquared))
-            # print('     x_1024=', '({:.6f})'.format(results.params[2]), '({:.6f})'.format(results.bse[2]),
-            #       '     y_1024=', '({:.6f})'.format(results.params[3]), '({:.6f})'.format(results.bse[3]))
+            df_all = pd.DataFrame({'ADU': np.ravel(sa.realigned_array),        # independent variable.
+                                   'Sources': np.ravel(self.best_bkgd_array),  # fits stars' contribution.
+                                   'Constant': 1.0,                            # fits sky bkgd contribution.
+                                   'X1024': x1024,                             # fits sky bkgd X-gradient.
+                                   'Y1024': y1024,                             # fits sky bkgd Y-gradient.
+                                   'Vignette': vignette})                      # fits sky bkgd parabolic.
+            # Mask out pixels around MP: numpy mask=True hides.
+            df_fit = df_all.loc[np.ravel(sa.realigned_mp_mask), :]
+            dep_variable_column = 'ADU'
+            dep_variable_data = df_fit[dep_variable_column]  # statsmodels: 'endog'.
+            indep_variable_columns = [col for col in df_fit.columns if col != dep_variable_column]
+            indep_variable_data = df_fit.loc[:, indep_variable_columns]  # statsmodels: 'exog'.
 
-        # Using coefficients, generate nominal mp_free_subarrays:
-        for (sf, bo, sa) in zip(source_factors, background_offsets, self.subarrays):
-            fitted_whole_background = bo + sf * self.best_bkgd_array
-            sa.realigned_mp_only_array = sa.realigned_array - fitted_whole_background
+            # Kludge for statsmodels failure to properly initialize first model:
+            if i == 0:
+                try:
+                    model = sma.OLS(endog=dep_variable_data, exog=indep_variable_data)
+                    fit = model.fit()
+                except np.linalg.LinAlgError:
+                    print('Sure enough, statsmodels freaked out on first model attempt.')
+            # Perform weighted linear least-squares regression:
+            model = sma.OLS(endog=dep_variable_data, exog=indep_variable_data)
+            fit = model.fit()
+            print('\ndecomp:', str(i), sa.filename,
+                  '  bkgd_offset=', '{:.3f}'.format(fit.params['Constant']),
+                  '({:.3f})'.format(fit.bse['Constant']),
+                  'source_factor=', '{:.4f}'.format(fit.params['Sources']),
+                  '({:.4f})'.format(fit.bse['Sources']),
+                  '  R2=', '{:.6f}'.format(fit.rsquared))
+            print('     x_1024=', '{:.6f}'.format(fit.params['X1024']),
+                  '({:.6f})'.format(fit.bse['X1024']),
+                  '     y_1024=', '{:.6f}'.format(fit.params['Y1024']),
+                  '({:.6f})'.format(fit.bse['Y1024']),
+                  '     vignette=', '{:.6f}'.format(fit.params['Vignette']),
+                  '({:.6f})'.format(fit.bse['Vignette']))
+            fitted_background_1d = np.array(fit.predict(exog=df_all[indep_variable_columns]))
+            best_fitted_background = fitted_background_1d.reshape(subarray_shape)
+            sa.realigned_mp_only_array = sa.realigned_array - best_fitted_background
+        if do_plot:
+            plot_arrays('MP-only Subarrays', [sa.realigned_mp_only_array for sa in self.subarrays],
+                        [sa.filename for sa in self.subarrays])
 
     def do_mp_aperture_photometry(self):
         """  Do aperture photometry on best MP-only subarrays, using pill masks previously saved.
@@ -968,7 +997,7 @@ def plot_arrays(figtitle, arrays, plot_titles):
                 ax = axes[i_row, i_col]
                 ax.remove()
             plt.draw()
-    plt.show()
+    # plt.show()
 
 
 def plot_one_array(figtitle, array):

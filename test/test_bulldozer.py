@@ -247,18 +247,36 @@ def test_class_subarraylist_1():
 
     # Test .convolve_subarrays():
     assert all([sa.convolved_array is None for sa in sal.subarrays])
-    sal.convolve_subarrays()
+    sal.convolve_subarrays(do_plot=False)
     assert all([sa.convolved_array.shape == (230, 402) for sa in sal.subarrays])
     assert np.max(sal.subarrays[0].convolved_array) == pytest.approx(1565, abs=1)
     assert np.min(sal.subarrays[0].convolved_array) == pytest.approx(131, abs=1)
     assert np.sum(sal.subarrays[0].convolved_array) == pytest.approx(15482530, abs=10)
 
     # Test .realign():
-    # THIS TEST SECTION IN DEVELOPMENT 2021-01-18.
     assert 1 < sal.nominal_sigma < 20  # sanity check only
     assert sal.maximum_sigma is None
-    sal.realign(do_print=True)
-    assert 1 < sal.maximum_sigma < 20  # sanity check only
+    sal.realign(do_print=False)
+    assert 1 < sal.maximum_sigma < 20           # sanity check only
+    assert 45 < sal.best_rms_misalignment < 55  # "
+
+    # Test .make_best_bkgd_array():
+    assert sal.best_bkgd_array is None
+    sal.make_best_bkgd_array(do_plot=False)
+    assert isinstance(sal.best_bkgd_array, np.ndarray)
+    assert sal.best_bkgd_array.shape == sal.subarrays[0].realigned_array.shape
+    assert sal.best_bkgd_array[0][0] == pytest.approx(1.716, abs=0.001)
+
+    # Test .make_mp_only_subarrays():
+    # THIS TEST SECTION IN DEVELOPMENT 2021-01-25.
+    assert all([sa.realigned_mp_only_array is None for sa in sal.subarrays])
+    sal.make_mp_only_subarrays(do_plot=True)
+    assert all([isinstance(sa.realigned_mp_only_array, np.ndarray) for sa in sal.subarrays])
+
+
+
+    plt.show()
+
 
 
 # def test_xxx_verify_transform_functionality():
