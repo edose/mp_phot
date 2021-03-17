@@ -2,9 +2,9 @@ __author__ = "Eric Dose :: New Mexico Mira Project, Albuquerque"
 
 # Python core packages:
 import os
-import pytest
 
 # External packages:
+import pytest
 import numpy as np
 import pandas as pd
 from astropy.nddata import CCDData

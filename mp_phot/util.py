@@ -18,6 +18,7 @@ VALID_FITS_FILE_EXTENSIONS = ['.fits', '.fit', '.fts']
 
 _____SERVICE_FUNCTIONS____________________________ = 0
 
+
 def get_mp_filenames(directory):
     """ Get only filenames in directory like MP_xxxxx.[ext], where [ext] is a legal FITS extension.
         The order of the return list is alphabetical (which may or may not be in time order).
@@ -181,7 +182,7 @@ _____IMAGE_and_SUBIMAGE_UTILS_____________________________________ = 0
 
 class Square:
     """ Copy of image slice, array if not cropped at edge. Centered on an integer pixel position.
-        Added circular mask if requested (combined with original mask if present).
+        Add circular mask if requested (which is then combined with original mask if present).
     """
     def __init__(self, image, x_center, y_center, square_radius, mask_radius=None):
         """
@@ -192,6 +193,19 @@ class Square:
         :param square_radius: half-length of array's edge length less one, in pixels;
                    e.g., 10 to render a 21 x 21 array. Rounded down if not integral. [float]
         :param mask_radius: radius of center-aperture mask, or None/<=zero for no mask. [float or None]
+        ---------------------------------------------
+        Object fields:
+        self.x_center, .y_center: center pixel position in parent array. [ints]
+        self.radius = pixel distance from center to edge =(size-1) / 2. [int]
+        self.mask_radius: stored input (could be None or <= 1 for no constructed mask). [float or None]
+        self.x_low, .x_high, .y_low, .y_high: pixel limits in parent array. [ints]
+        self.shape: (y,x) shape of Square object. [2-tuple of ints]
+        self.is_cropped: True iff Square object smaller than radius because close to parent edge. [boolean]
+        self.data: data array. [numpy ndarray of floats, typically in ADUs]
+        self.parent: parent image as passed in, for access if ever needed.
+            [CCDData or numpy array or numpy masked array]
+        self.mask:
+        self.is_valid:
         """
         # Make slice copy, with center and edges on integer pixel positions:
         self.x_center = int(round(x_center))  # x center position in parent array.
@@ -206,6 +220,8 @@ class Square:
         self.x_high = min(image.shape[1], self.x_center + self.radius)
         self.y_low = max(0, self.y_center - self.radius)
         self.y_high = min(image.shape[0], self.y_center + self.radius)
+        self.x_cutout_center = self.x_center - self.x_low
+        self.y_cutout_center = self.y_center - self.y_low
 
         cropped_image = image[self.y_low:self.y_high + 1,
                               self.x_low:self.x_high + 1].copy()  # ndarray & CCDData are [y,x]
@@ -237,7 +253,7 @@ class Square:
                 self.mask = self.mask | circular_mask
 
     def __str__(self):
-        """ Return descriptor of this Square object, as Square object 50x50 at x,y = 123.456, 234.543'. """
+        """ Return descriptor of this Square object, as 'Square object 50x50 at x,y = 123.456, 234.543'. """
         return 'Square object ' + str(self.shape[0]) + 'x' + str(self.shape[1]) +\
                ' at x,y = ' + '{:.3f}'.format(self.x_center) + ', ' + '{:.3f}'.format(self.y_center) + '.'
 

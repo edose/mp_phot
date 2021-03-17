@@ -886,20 +886,23 @@ class SubarrayList:
                         [sa.filename for sa in self.subarrays])
 
     def do_mp_aperture_photometry(self):
-        """  Do aperture photometry on best MP-only subarrays, using pill masks previously saved.
-        :return: [None]
+        """ Do aperture photometry on best MP-only subarrays. Use pill masks previously saved.
+            Ensure that Square object's size is big enough to bound a pill-mask (not just a circular).
+        :return: [None ]SubarrayList.Subarray objects are populated with:
+                            sa.mp_flux, sa.mp_sigma.
         """
+        # TODO: Resize Square objects' sizes to ensure bounding the pill mask.
         for sa in self.subarrays:
             this_masked_array = np.ma.array(data=sa.realigned_mp_only_array,
-                                            mask=sa.realigned_mp_mask)  # whole subarray.
+                                            mask=sa.realigned_mp_mask)  # whole subarray; mask pill-shape.
             mp_square = util.Square(this_masked_array,
                                     sa.realigned_mp_location[0],
                                     sa.realigned_mp_location[1],
                                     10 * self.maximum_sigma)
             masked_square = np.ma.array(data=mp_square.data,
                                         mask=mp_square.mask)  # small square slice of subarray.
-            mp_aperture_flux = np.sum(masked_square)       # from masked sum.
-            mp_aperture_area = np.sum(masked_square.mask)  # pixel count.
+            mp_aperture_flux = np.sum(masked_square)          # from masked sum.
+            mp_aperture_area = np.sum(masked_square.mask)     # pixel count.
             bkgd_median, bkgd_std = util.calc_background_adus(data=masked_square.data,
                                                               mask=masked_square.mask,
                                                               invert_mask=True)  # True to hide MP.

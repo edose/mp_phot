@@ -169,7 +169,7 @@ def test_write_control_ini_stub():
     assert len(cd['mp xy']) == 2
     assert cd['mp xy'][filenames_temporal_order[0]] == (0.0, 0.0)
     assert cd['omit comps'] == cd['omit obs'] == cd['omit images'] == []
-    assert cd['fit jd'] == True
+    assert cd['fit jd'] is True
 
 
 def test_assess():

@@ -1,4 +1,4 @@
-__author__ = "Eric Dose :: New Mexico Mira Project, Albuquerque"
+__author__ = "Eric Dose, Albuquerque"
 
 # Python core packages:
 import os
@@ -16,7 +16,7 @@ from astropy.wcs import WCS
 
 # EVD packages:
 from astropak.ini import IniFile
-from astropak.image import FITS, Image
+from astropak.legacy import FITS, Image
 from astropak.util import jd_from_datetime_utc
 
 # From this package:
